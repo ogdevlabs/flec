@@ -1,0 +1,22 @@
+# Core CV and perception
+opencv-python>=4.8.0
+ultralytics>=8.0.0
+mediapipe>=0.10.0
+
+# Speech: wake word and STT
+openwakeword>=0.6.0
+openai-whisper
+
+# TTS (Coqui)
+TTS>=0.22.0
+
+# OCR and image understanding
+easyocr>=1.7.0
+
+# Transformers (BLIP-2)
+transformers>=4.35.0
+torch>=2.1.0
+
+# Testing
+pytest>=7.4.0
+hypothesis>=6.90.0
