@@ -5,9 +5,11 @@ TTSEngine (audio) and AROverlay (visual). No other module writes audio
 or AR directly.
 
 Architecture:
-  - Stateful: tracks active Mode, active Challenge, and WearState.
+  - Stateful: tracks active Mode, active Challenge, WearState, and StoryContext.
   - Deduplication: same (type, label) key within 3s suppressed.
   - Mode isolation: each event type only fires audio in its relevant modes.
+  - Story mode: TEXT events → cursor-gated narration; ILLUSTRATION → insert-point description.
+  - StoryContext=None (book removed) → silent pause, no error audio.
   - Structured JSON logging on every routing decision.
 
 Privacy: no frames or audio are persisted. All state in-memory and ephemeral.
@@ -32,6 +34,7 @@ from flec.models import (
     DetectionType,
     Mode,
     ReadingIntent,
+    StoryContext,
     WearState,
 )
 
@@ -106,6 +109,7 @@ class ResponseEngine:
         self._mode: Mode = Mode.STANDBY
         self._wear_state: WearState = WearState.OFF_HEAD
         self._challenge: Optional[Challenge] = None
+        self._story_context: Optional[StoryContext] = None
 
         # Deduplication: (DetectionType, label) → last narration timestamp
         self._last_spoken: dict[tuple, float] = {}
@@ -136,6 +140,10 @@ class ResponseEngine:
     def challenge(self) -> Optional[Challenge]:
         return self._challenge
 
+    @property
+    def story_context(self) -> Optional[StoryContext]:
+        return self._story_context
+
     # ------------------------------------------------------------------
     # State setters
     # ------------------------------------------------------------------
@@ -144,6 +152,10 @@ class ResponseEngine:
         previous = self._mode
         self._mode = mode
         self._last_spoken.clear()
+        if mode == Mode.STORY and self._story_context is None:
+            self._story_context = StoryContext()
+        elif previous == Mode.STORY and mode != Mode.STORY:
+            self._story_context = None
         logger.info(json.dumps({
             "event": "response_engine.mode_changed",
             "from": previous.name,
@@ -176,6 +188,10 @@ class ResponseEngine:
             "event": "response_engine.challenge_set",
             "target_label": self._challenge.target_label,
         }))
+
+    def set_story_context(self, ctx: Optional[StoryContext]) -> None:
+        """Set or clear the active StoryContext (e.g. on page turn or book removal)."""
+        self._story_context = ctx
 
     def set_pending_illustration(self, description: str) -> None:
         """Inject a pending illustration description for the next READING event."""
@@ -402,18 +418,57 @@ class ResponseEngine:
             logger.info(json.dumps({"event": "response_engine.illustration_narrate"}))
 
     # ------------------------------------------------------------------
-    # Text / Illustration (Story Mode)
+    # Text / Illustration (Story Mode and Reading Mode)
     # ------------------------------------------------------------------
 
     def _handle_text(self, event: DetectionEvent) -> None:
         """Handle TEXT detection in STORY or READING mode."""
-        if self._mode not in (Mode.STORY, Mode.READING):
+        if self._mode == Mode.STORY:
+            self._handle_story_text(event)
+        elif self._mode == Mode.READING:
+            self._tts.speak(AudioResponse(text=event.label, priority=AudioPriority.NORMAL))
+
+    def _handle_story_text(self, event: DetectionEvent) -> None:
+        """Cursor-gated narration for STORY mode TEXT events."""
+        if self._story_context is None:
+            logger.debug(json.dumps({"event": "response_engine.story_text_dropped_no_context"}))
             return
-        self._tts.speak(AudioResponse(text=event.label, priority=AudioPriority.NORMAL))
+
+        text = event.label.strip()
+        if not text:
+            return
+
+        ctx = self._story_context
+        words = text.split()
+        start_pos = ctx.narrative_position
+
+        if start_pos < len(words):
+            remaining = " ".join(words[start_pos:])
+            if remaining.strip():
+                self._tts.speak(AudioResponse(text=remaining, priority=AudioPriority.NORMAL))
+                logger.info(json.dumps({
+                    "event": "response_engine.story_text_narrated",
+                    "words_remaining": len(remaining.split()),
+                    "confidence": round(event.confidence, 3),
+                }))
 
     def _handle_illustration(self, event: DetectionEvent) -> None:
-        """Store illustration description as pending for next READING event."""
-        self._pending_illustration = event.label
+        """Handle ILLUSTRATION events."""
+        if self._mode == Mode.STORY:
+            if self._story_context is not None:
+                description = event.label.strip()
+                if description:
+                    self._tts.speak(AudioResponse(text=description, priority=AudioPriority.NORMAL))
+                    logger.info(json.dumps({
+                        "event": "response_engine.story_illustration_described",
+                        "word_count": len(description.split()),
+                        "confidence": round(event.confidence, 3),
+                    }))
+            else:
+                logger.debug(json.dumps({"event": "response_engine.illustration_dropped_no_context"}))
+        else:
+            # In READING mode: store as pending for next FINGER event
+            self._pending_illustration = event.label
 
     # ------------------------------------------------------------------
     # Helpers
