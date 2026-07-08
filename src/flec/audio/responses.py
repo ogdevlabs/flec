@@ -26,11 +26,8 @@ from flec.models import AudioPriority, AudioResponse, DetectionEvent, DetectionT
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Voice character variants
+# Voice character variants — Exploration Mode
 # ---------------------------------------------------------------------------
-
-# Templates receive format kwargs: label, color, shape, article
-# All templates are ≤ ~10 words — appropriate for toddler attention spans.
 
 _SHAPE_TEMPLATES: list[str] = [
     "I see a {label}!",
@@ -64,7 +61,6 @@ _VOWEL_SOUNDS = frozenset("aeiouAEIOU")
 
 
 def _article(word: str) -> str:
-    """Return 'an' if word starts with a vowel sound, else 'a'."""
     if word and word[0] in _VOWEL_SOUNDS:
         return "an"
     return "a"
@@ -76,30 +72,12 @@ def _article(word: str) -> str:
 
 
 def random_variant(templates: list[str], **kwargs) -> str:  # type: ignore[no-untyped-def]
-    """Select a random template and format it with the given kwargs.
-
-    Args:
-        templates: List of format strings.
-        **kwargs: Format arguments (label, color, shape, article, etc.)
-
-    Returns:
-        A formatted narration string.
-    """
     template = random.choice(templates)
     return template.format(**kwargs)
 
 
 def narrate_detection(event: DetectionEvent, paired_color: Optional[str] = None) -> str:
-    """Generate a child-friendly narration string for a detection event.
-
-    Args:
-        event: The detection event to narrate.
-        paired_color: If provided and event is a SHAPE, use combined "color + shape" template.
-
-    Returns:
-        A narration string ready for TTS synthesis. Never empty — falls back
-        to a generic encouraging phrase if the event is unrecognised.
-    """
+    """Generate a child-friendly narration string for a detection event."""
     label = event.label.lower().strip()
 
     if event.type == DetectionType.SHAPE:
@@ -112,13 +90,10 @@ def narrate_detection(event: DetectionEvent, paired_color: Optional[str] = None)
             )
         else:
             text = random_variant(_SHAPE_TEMPLATES, label=label, article=_article(label))
-
     elif event.type == DetectionType.COLOR:
         text = random_variant(_COLOR_TEMPLATES, label=label, article=_article(label))
-
     else:
-        # Fallback for unknown event types — audio-complete, never silent
-        text = f"I see something interesting!"
+        text = "I see something interesting!"
 
     logger.debug(json.dumps({
         "event": "narration_generated",
@@ -126,25 +101,87 @@ def narrate_detection(event: DetectionEvent, paired_color: Optional[str] = None)
         "detection_type": event.type.name,
         "text": text,
     }))
-
     return text
+
+
+def exploration_narration(shape_or_color: str) -> str:
+    """Simple narration for a detected shape or color label string."""
+    templates = [
+        f"I see a {shape_or_color}!",
+        f"Ooh, I found a {shape_or_color}!",
+        f"Look, a {shape_or_color}!",
+    ]
+    return random.choice(templates)
 
 
 def build_exploration_response(
     event: DetectionEvent, paired_color: Optional[str] = None
 ) -> AudioResponse:
-    """Build an AudioResponse for an exploration-mode detection event.
-
-    Args:
-        event: Detection event (SHAPE or COLOR).
-        paired_color: Optional color label to pair with a SHAPE event.
-
-    Returns:
-        An AudioResponse at NORMAL priority with the narration text.
-    """
+    """Build an AudioResponse for an exploration-mode detection event."""
     text = narrate_detection(event, paired_color=paired_color)
     return AudioResponse(
         text=text,
         priority=AudioPriority.NORMAL,
         pre_cached=False,
     )
+
+
+# ---------------------------------------------------------------------------
+# Challenge Mode
+# ---------------------------------------------------------------------------
+
+
+def challenge_acknowledgment(target: str) -> str:
+    templates = [
+        f"Ok! Let's find a {target}!",
+        f"Ooh fun! Can you find a {target}?",
+        f"Let's go! Find something {target}!",
+    ]
+    return random.choice(templates)
+
+
+def challenge_celebration(target: str) -> str:
+    templates = [
+        f"You found it! That's a {target}!",
+        f"Amazing! You found a {target}! You're a superstar!",
+        f"Yes! Great job! That is a {target}!",
+        f"Woohoo! You found the {target}! You're so smart!",
+    ]
+    return random.choice(templates)
+
+
+def challenge_encouraging() -> str:
+    templates = [
+        "Keep looking, hero!",
+        "You can do it! Keep searching!",
+        "Almost there! Keep going!",
+        "Super job looking! Keep it up!",
+        "You're doing great! Keep searching!",
+    ]
+    return random.choice(templates)
+
+
+def challenge_hint(target: str) -> str:
+    templates = [
+        f"Remember, we're looking for a {target}!",
+        f"Keep searching! We want to find a {target}!",
+        f"Hey hero, look around for a {target}!",
+    ]
+    return random.choice(templates)
+
+
+# ---------------------------------------------------------------------------
+# Wear / session lifecycle
+# ---------------------------------------------------------------------------
+
+
+def wear_welcome() -> str:
+    return "Hero mask activated! Let's explore!"
+
+
+def wear_off_prompt() -> str:
+    return "Put your mask back on, hero!"
+
+
+def session_farewell() -> str:
+    return "See you next time, hero!"
