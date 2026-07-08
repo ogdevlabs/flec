@@ -100,7 +100,8 @@ def test_update_returns_on_head_when_face_detected(face_frame: np.ndarray) -> No
 
     with patch("flec.perception.wear_detector.mp") as mock_mp:
         _setup_mediapipe_mock(mock_mp, detections=[_make_face_detection()])
-        detector = WearDetector()
+        # debounce_seconds=0 so transition is immediate in the test
+        detector = WearDetector(debounce_seconds=0.0)
         result = detector.update(face_frame)
         assert result == WearState.ON_HEAD
 
@@ -151,15 +152,10 @@ def test_exactly_one_event_on_state_transition() -> None:
     face[160:320, 213:427] = (102, 163, 204)
 
     with patch("flec.perception.wear_detector.mp") as mock_mp:
-        # First call: no face → OFF_HEAD (no transition, starts OFF)
-        # Second call: face detected → ON_HEAD transition (1 event)
-        # Third call: face again → ON_HEAD (no transition, 0 events)
-        # Fourth call: no face → OFF_HEAD transition (1 event)
+        # Use debounce_seconds=0 so transitions are immediate without time.sleep
+        detector = WearDetector(on_event=events.append, debounce_seconds=0.0)
 
-        detector = WearDetector(on_event=events.append)
-        detector._mock = mock_mp  # store for dynamic swap in test
-
-        # OFF_HEAD (initial, no event)
+        # First call: no face → OFF_HEAD (starts OFF, no transition event)
         _setup_mediapipe_mock(mock_mp, detections=[])
         detector.update(blank)
         assert len(events) == 0
@@ -244,7 +240,7 @@ def test_wear_event_has_correct_type_and_confidence() -> None:
 
     with patch("flec.perception.wear_detector.mp") as mock_mp:
         _setup_mediapipe_mock(mock_mp, detections=[_make_face_detection()])
-        detector = WearDetector(on_event=events.append)
+        detector = WearDetector(on_event=events.append, debounce_seconds=0.0)
         detector.update(face)
 
     assert len(events) == 1
