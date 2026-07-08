@@ -1,14 +1,10 @@
 """Flec entry point — boot, session loop.
 
-Voice command wiring (T038):
-  1. Wake word detected (WakeWordListener callback)
-  2. Capture short audio segment
-  3. CommandSTT.transcribe() → VoiceCommand
-  4. Session.handle_voice_command() → state updates
-  5. Build DetectionEvent with embedded VoiceCommand
-  6. ResponseEngine.on_event() → audio/AR response
-
-Observability: structured JSON log on every command received.
+Session loop architecture (Constitution §III):
+- FingerTracker processes frames; results become DetectionEvents on the event queue.
+- ResponseEngine consumes events from the queue and emits AudioResponses.
+- OCR results (when available) are fed back to FingerTracker via update_ocr().
+- No capability module imports another directly; all communication via queues.
 """
 
 from __future__ import annotations
@@ -19,94 +15,121 @@ import logging
 import queue
 import sys
 import threading
-import time
 from typing import Optional
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Boot
+# Session loop
 # ---------------------------------------------------------------------------
 
 
-def _configure_logging(level: str) -> None:
-    logging.basicConfig(
-        level=getattr(logging, level),
-        format='{"level": "%(levelname)s", "module": "%(name)s", "msg": "%(message)s"}',
-        stream=sys.stdout,
-    )
+class FlecSession:
+    """Manages the per-frame perception loop for one session.
 
-
-# ---------------------------------------------------------------------------
-# Voice command pipeline
-# ---------------------------------------------------------------------------
-
-
-def handle_voice_command(
-    raw_text: str,
-    session,      # flec.session.Session
-    engine,       # flec.engine.response_engine.ResponseEngine
-    stt,          # flec.speech.command_stt.CommandSTT
-) -> None:
-    """Parse a transcript and propagate it through session + response engine.
-
-    This is the central wiring point between STT output and the session/engine
-    layer.  It emits a VOICE_CMD DetectionEvent so ResponseEngine receives the
-    full command, and also calls Session.handle_voice_command() for state updates.
-
-    All exceptions are caught — the toddler must never see an error.
-
-    Args:
-        raw_text: The transcript string produced by the STT backend.
-        session: The active Session instance.
-        engine: The active ResponseEngine.
-        stt: The CommandSTT instance used to parse the text.
+    Runs in dev mode: FingerTracker + ResponseEngine wired together.
+    OCR results are fed to FingerTracker.update_ocr() when available.
     """
-    try:
-        voice_cmd = stt.transcribe_text(raw_text)
 
-        logger.info(
-            json.dumps({
-                "event": "main.voice_command_received",
-                "raw_text": raw_text,
-                "intent": voice_cmd.intent.name,
-                "target_label": voice_cmd.target_label,
-                "target_type": (
-                    voice_cmd.target_type.name if voice_cmd.target_type else None
-                ),
-            })
-        )
+    def __init__(self, mode: str = "dev") -> None:
+        self._run_mode = mode
+        self._running = False
+        self._frame_thread: Optional[threading.Thread] = None
 
-        # Update session state
-        session.handle_voice_command(
-            intent=voice_cmd.intent,
-            target_label=voice_cmd.target_label,
-            target_type=voice_cmd.target_type,
-        )
+        # Lazy imports (keep top-level import cost low at startup).
+        from flec.perception.finger_tracker import FingerTracker
+        from flec.engine.response_engine import ResponseEngine
+        from flec.models import Mode as FlecMode
 
-        # Build a DetectionEvent wrapping the VoiceCommand
+        # Shared event queue (perception → response engine).
+        self._event_queue: queue.Queue = queue.Queue(maxsize=500)
+
+        # Audio output queue (response engine → TTS — stub for now).
+        self._audio_queue: queue.Queue = queue.Queue(maxsize=100)
+
+        self._finger_tracker = FingerTracker()
+        self._response_engine = ResponseEngine(audio_queue=self._audio_queue)
+
+        # Start in READING mode for dev testing of this phase.
+        self._response_engine.set_mode(FlecMode.READING)
+
+        logger.info(json.dumps({"event": "flec_session_init", "run_mode": mode}))
+
+    def process_frame(self, frame: np.ndarray, ocr_result: Optional[list[str]] = None) -> None:
+        """Process a single camera frame through the perception pipeline.
+
+        Called per-frame by the camera capture loop (or tests).
+
+        Args:
+            frame:      BGR numpy array (HxWx3).
+            ocr_result: Text regions from the latest OCR pass, if available.
+                        Fed to FingerTracker.update_ocr() to populate nearest_text.
+        """
         from flec.models import DetectionEvent, DetectionType
 
-        cmd_event = DetectionEvent(
-            type=DetectionType.VOICE_CMD,
-            label=voice_cmd.intent.name,
-            confidence=1.0,
-            metadata={"command": voice_cmd},
-        )
+        # 1. Run FingerTracker.
+        state = self._finger_tracker.update(frame)
 
-        # Route through ResponseEngine for audio/AR
-        engine.on_event(cmd_event)
+        # 2. Inject OCR result if provided.
+        if ocr_result is not None:
+            self._finger_tracker.update_ocr(text_regions=ocr_result)
+            # Re-read state after OCR update (nearest_text may have changed).
+            state = self._finger_tracker.current_state
 
-    except Exception as exc:  # noqa: BLE001
-        # Constitution Rule 5: never surface errors to the toddler
-        logger.error(
-            json.dumps({
-                "event": "main.voice_command_error",
-                "raw_text": raw_text,
-                "error": str(exc),
-            })
-        )
+        # 3. Emit DetectionEvent(FINGER) if finger is detected.
+        if state.detected or state.intent.name != "IDLE":
+            event = DetectionEvent(
+                type=DetectionType.FINGER,
+                label=state.nearest_text or "finger",
+                confidence=1.0,
+                metadata={
+                    "intent": state.intent,
+                    "nearest_text": state.nearest_text,
+                    "is_illustration": False,
+                    "position_x": state.position_x,
+                    "position_y": state.position_y,
+                    "velocity": state.velocity,
+                },
+            )
+            # 4. Route event through ResponseEngine.
+            self._response_engine.on_event(event)
+
+            logger.debug(
+                json.dumps(
+                    {
+                        "event": "frame_processed",
+                        "detected": state.detected,
+                        "intent": state.intent.name,
+                        "nearest_text": state.nearest_text,
+                    }
+                )
+            )
+
+    def drain_audio_queue(self) -> list:
+        """Return and clear all pending AudioResponses (for testing / logging)."""
+        responses = []
+        while not self._audio_queue.empty():
+            try:
+                responses.append(self._audio_queue.get_nowait())
+            except queue.Empty:
+                break
+        return responses
+
+    def reset_reading_state(self) -> None:
+        """Reset FingerTracker on mode transitions."""
+        self._finger_tracker.reset()
+        logger.info(json.dumps({"event": "reading_state_reset"}))
+
+    @property
+    def finger_tracker(self):
+        return self._finger_tracker
+
+    @property
+    def response_engine(self):
+        return self._response_engine
 
 
 # ---------------------------------------------------------------------------
@@ -133,67 +156,26 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    _configure_logging(args.log_level)
-
-    logger.info(
-        json.dumps({
-            "event": "main.boot",
-            "run_mode": args.mode,
-        })
+    logging.basicConfig(
+        level=getattr(logging, args.log_level),
+        format='{"level": "%(levelname)s", "module": "%(name)s", "msg": "%(message)s"}',
+        stream=sys.stdout,
     )
 
-    # Lazy imports to avoid loading heavy ML dependencies at module import time
-    from flec.audio.responses import wear_welcome
-    from flec.engine.response_engine import ResponseEngine
-    from flec.models import AudioPriority, AudioResponse, Mode, WearState
-    from flec.session import Session
-    from flec.speech.command_stt import CommandSTT
+    logger.info(json.dumps({"event": "flec_start", "mode": args.mode}))
 
-    # --- Initialise core components ---
-    session = Session()
-    stt = CommandSTT()  # Whisper model loaded lazily on first audio input
-
-    # Stub TTS (real TTSEngine wired in subsequent phases)
-    class _StubTTS:
-        def speak(self, response: AudioResponse) -> None:
-            logger.info(
-                json.dumps({
-                    "event": "tts.speak_stub",
-                    "text": response.text,
-                    "priority": response.priority.name,
-                })
-            )
-
-        def stop_current(self) -> None:
-            pass
-
-    engine = ResponseEngine(tts=_StubTTS())
-    engine.set_mode(Mode.EXPLORATION)
-
-    # Wire post-wake-word handler
-    def on_wake_word_detected() -> None:
-        """Callback invoked by WakeWordListener on "Hey Flec"."""
-        # In production: capture PCM audio, pass to stt.transcribe(audio_bytes)
-        # In dev/stub: exercise the pipeline with a log entry
-        logger.info(json.dumps({"event": "main.wake_word_detected"}))
-        # Stub: no audio capture yet — full wiring in phase 6
-        # handle_voice_command("find a circle", session, engine, stt)
-
+    session = FlecSession(mode=args.mode)
     logger.info(
-        json.dumps({
-            "event": "main.ready",
-            "mode": args.mode,
-            "note": "Voice command wiring active — challenge mode ready",
-        })
+        json.dumps({"event": "flec_ready", "note": "session loop ready — awaiting frames"})
     )
 
-    # Session loop stub — full boot sequence in subsequent phases
-    logger.info(
-        json.dumps({
-            "event": "main.session_loop_stub",
-            "msg": "Full boot sequence in later phases",
-        })
-    )
+    # In dev mode, process a single blank frame to confirm the pipeline works.
+    if args.mode == "dev":
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        session.process_frame(frame, ocr_result=None)
+        logger.info(
+            json.dumps({"event": "flec_dev_frame_processed", "status": "ok"})
+        )
 
 
 if __name__ == "__main__":
