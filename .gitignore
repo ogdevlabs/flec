@@ -1,3 +1,4 @@
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -7,12 +8,30 @@ __pycache__/
 dist/
 build/
 .eggs/
-.env
-.venv
-env/
+.venv/
 venv/
+env/
+
+# pytest
 .pytest_cache/
+.hypothesis/
+
+# Models (downloaded separately)
+.models/
+
+# Logs
+*.log
+
+# mypy / ruff / type checkers
 .mypy_cache/
 .ruff_cache/
-*.log
+
+# Environment
+.env
+
+# macOS
 .DS_Store
+
+# IDE
+.vscode/
+.idea/
