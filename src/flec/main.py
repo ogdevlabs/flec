@@ -24,6 +24,12 @@ def main() -> None:
         default="INFO",
         help="Logging level",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Validate configuration and imports without starting the session loop",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -34,6 +40,9 @@ def main() -> None:
 
     logger.info("Flec starting in %s mode", args.mode)
     # Boot sequence and session loop will be implemented in subsequent phases.
+    if args.dry_run:
+        logger.info("Dry-run: configuration validated — exiting without starting session loop")
+        return
     logger.info("Flec ready (stub — full boot in later phases)")
 
 
