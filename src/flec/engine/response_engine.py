@@ -6,8 +6,8 @@ or AR directly.
 
 Architecture:
   - Stateful: tracks active Mode, active Challenge, and WearState.
-  - Deduplication: same label within 3s suppressed in EXPLORATION mode.
-  - Mode isolation: shape/color narration only fires in EXPLORATION/CHALLENGE.
+  - Deduplication: same (type, label) key within 3s suppressed.
+  - Mode isolation: each event type only fires audio in its relevant modes.
   - Structured JSON logging on every routing decision.
 
 Privacy: no frames or audio are persisted. All state in-memory and ephemeral.
@@ -31,6 +31,7 @@ from flec.models import (
     DetectionEvent,
     DetectionType,
     Mode,
+    ReadingIntent,
     WearState,
 )
 
@@ -41,7 +42,7 @@ _ENCOURAGE_THROTTLE_SECONDS: float = 5.0
 
 
 # ---------------------------------------------------------------------------
-# TTS Protocol (duck-typed to avoid importing TTSEngine at module level)
+# TTS Protocol
 # ---------------------------------------------------------------------------
 
 
@@ -51,7 +52,7 @@ class _TTSProtocol(Protocol):
 
 
 class _QueueTTS:
-    """Wraps a queue.Queue so it satisfies _TTSProtocol.
+    """Wraps a queue.Queue to satisfy _TTSProtocol.
 
     Allows the Phase 4 test pattern ``ResponseEngine(audio_queue=q)`` to
     continue working unchanged.
@@ -76,13 +77,13 @@ class ResponseEngine:
     """Routes detection events to audio and AR outputs.
 
     Accepts either a Protocol-compliant ``tts`` object or a legacy
-    ``audio_queue`` (queue.Queue) for backward compatibility with Phase 4 tests.
+    ``audio_queue`` (queue.Queue) for backward compatibility.
 
-    Usage (Phase 5+ preferred)::
+    Usage (preferred)::
 
         engine = ResponseEngine(tts=tts_engine)
 
-    Usage (Phase 4 legacy)::
+    Usage (legacy / tests)::
 
         audio_queue = queue.Queue()
         engine = ResponseEngine(audio_queue=audio_queue)
@@ -105,8 +106,13 @@ class ResponseEngine:
         self._mode: Mode = Mode.STANDBY
         self._wear_state: WearState = WearState.OFF_HEAD
         self._challenge: Optional[Challenge] = None
-        self._last_narrated: dict[str, float] = {}
+
+        # Deduplication: (DetectionType, label) → last narration timestamp
+        self._last_spoken: dict[tuple, float] = {}
         self._last_encourage_at: float = 0.0
+
+        # Reading mode: pending illustration description
+        self._pending_illustration: Optional[str] = None
 
         logger.info(json.dumps({"event": "response_engine.init", "mode": self._mode.name}))
 
@@ -137,7 +143,7 @@ class ResponseEngine:
     def set_mode(self, mode: Mode) -> None:
         previous = self._mode
         self._mode = mode
-        self._last_narrated.clear()
+        self._last_spoken.clear()
         logger.info(json.dumps({
             "event": "response_engine.mode_changed",
             "from": previous.name,
@@ -154,11 +160,7 @@ class ResponseEngine:
         challenge: Optional[Challenge] = None,
         issued_at_override: Optional[float] = None,
     ) -> None:
-        """Set active challenge.
-
-        Accepts either a pre-built ``Challenge`` object (Phase 4 pattern) or
-        ``target_label`` + ``target_type`` args (Phase 5 pattern).
-        """
+        """Set active challenge. Accepts a pre-built Challenge or label+type args."""
         if challenge is not None:
             self._challenge = challenge
         else:
@@ -174,6 +176,10 @@ class ResponseEngine:
             "event": "response_engine.challenge_set",
             "target_label": self._challenge.target_label,
         }))
+
+    def set_pending_illustration(self, description: str) -> None:
+        """Inject a pending illustration description for the next READING event."""
+        self._pending_illustration = description
 
     # ------------------------------------------------------------------
     # Main event router
@@ -191,16 +197,23 @@ class ResponseEngine:
             }))
 
     def _route(self, event: DetectionEvent) -> None:
-        if event.type == DetectionType.VOICE_CMD:
+        etype = event.type
+        if etype == DetectionType.VOICE_CMD:
             self._handle_voice_cmd(event)
-        elif event.type in (DetectionType.SHAPE, DetectionType.COLOR):
+        elif etype in (DetectionType.SHAPE, DetectionType.COLOR):
             self._handle_perception(event)
-        elif event.type == DetectionType.WEAR:
+        elif etype == DetectionType.WEAR:
             self._handle_wear(event)
+        elif etype == DetectionType.FINGER:
+            self._handle_finger(event)
+        elif etype == DetectionType.TEXT:
+            self._handle_text(event)
+        elif etype == DetectionType.ILLUSTRATION:
+            self._handle_illustration(event)
         else:
             logger.debug(json.dumps({
                 "event": "response_engine.event_unhandled",
-                "type": event.type.name,
+                "type": etype.name,
             }))
 
     # ------------------------------------------------------------------
@@ -211,7 +224,6 @@ class ResponseEngine:
         cmd = event.metadata.get("command") if event.metadata else None
         if cmd is None:
             return
-
         intent = cmd.intent
         if intent == CommandIntent.START_CHALLENGE:
             self._start_challenge_flow(cmd)
@@ -262,7 +274,7 @@ class ResponseEngine:
             ))
 
     # ------------------------------------------------------------------
-    # Perception event handling (SHAPE / COLOR)
+    # Perception handling (SHAPE / COLOR)
     # ------------------------------------------------------------------
 
     def _handle_perception(self, event: DetectionEvent) -> None:
@@ -279,11 +291,9 @@ class ResponseEngine:
 
     def _handle_challenge_detection(self, event: DetectionEvent) -> None:
         from flec.audio.responses import challenge_celebration, challenge_encouraging, challenge_hint
-
         challenge = self._challenge
         if challenge is None or challenge.status != ChallengeStatus.ACTIVE:
             return
-
         now = time.monotonic()
         if now - challenge.issued_at >= 30.0 and self._should_encourage(now):
             self._tts.speak(AudioResponse(
@@ -292,7 +302,6 @@ class ResponseEngine:
             ))
             self._last_encourage_at = now
             return
-
         if self._is_match(event, challenge):
             self._tts.speak(AudioResponse(
                 text=challenge_celebration(challenge.target_label),
@@ -304,11 +313,6 @@ class ResponseEngine:
                 issued_at=challenge.issued_at,
                 status=ChallengeStatus.COMPLETED,
             )
-            logger.info(json.dumps({
-                "event": "response_engine.challenge_match",
-                "label": event.label,
-                "target": challenge.target_label,
-            }))
         else:
             if self._should_encourage(now):
                 self._tts.speak(AudioResponse(
@@ -319,33 +323,27 @@ class ResponseEngine:
 
     def _handle_exploration_detection(self, event: DetectionEvent) -> None:
         from flec.audio.responses import build_exploration_response, exploration_narration
-
-        now = time.monotonic()
-        label = event.label.lower()
-        if now - self._last_narrated.get(label, 0.0) < _DEDUP_WINDOW_SECONDS:
+        dedup_key = (event.type, event.label.lower())
+        if self._is_recently_spoken(dedup_key):
             return
-        self._last_narrated[label] = now
-
         try:
             response = build_exploration_response(event)
         except Exception:
             response = AudioResponse(
-                text=exploration_narration(label),
+                text=exploration_narration(event.label),
                 priority=AudioPriority.NORMAL,
                 pre_cached=False,
             )
         self._tts.speak(response)
-
+        self._mark_spoken(dedup_key)
         if self._ar is not None and event.bounding_box is not None:
             try:
                 self._ar.draw_detection(None, event)
             except Exception:
                 pass
-
         logger.info(json.dumps({
             "event": "response_engine.exploration_narrated",
             "label": event.label,
-            "confidence": event.confidence,
         }))
 
     # ------------------------------------------------------------------
@@ -354,7 +352,6 @@ class ResponseEngine:
 
     def _handle_wear(self, event: DetectionEvent) -> None:
         from flec.audio.responses import wear_off_prompt, wear_welcome
-
         if event.label == WearState.ON_HEAD.name:
             self._wear_state = WearState.ON_HEAD
             if self._mode == Mode.STANDBY:
@@ -366,6 +363,59 @@ class ResponseEngine:
             self.set_mode(Mode.STANDBY)
 
     # ------------------------------------------------------------------
+    # Finger tracking (Reading Mode)
+    # ------------------------------------------------------------------
+
+    def _handle_finger(self, event: DetectionEvent) -> None:
+        """Route FINGER_TIP events in READING mode.
+
+        - READING intent + nearest_text → NORMAL narration
+        - READING intent + no text + is_illustration → pending illustration description
+        - SCANNING/IDLE intent → no audio (AR trail handled externally)
+        """
+        if self._mode != Mode.READING:
+            return
+        meta = event.metadata or {}
+        intent = meta.get("intent", ReadingIntent.IDLE)
+        nearest_text: Optional[str] = meta.get("nearest_text")
+        is_illustration: bool = meta.get("is_illustration", False)
+
+        if intent != ReadingIntent.READING:
+            logger.debug(json.dumps({
+                "event": "response_engine.finger_scanning",
+                "intent": intent.name if hasattr(intent, "name") else str(intent),
+            }))
+            return
+
+        if nearest_text:
+            dedup_key = (DetectionType.FINGER, nearest_text)
+            if not self._is_recently_spoken(dedup_key):
+                self._tts.speak(AudioResponse(text=nearest_text, priority=AudioPriority.NORMAL))
+                self._mark_spoken(dedup_key)
+                logger.info(json.dumps({"event": "response_engine.reading_narrate", "word": nearest_text}))
+            return
+
+        if is_illustration and self._pending_illustration:
+            description = self._pending_illustration
+            self._pending_illustration = None
+            self._tts.speak(AudioResponse(text=description, priority=AudioPriority.NORMAL))
+            logger.info(json.dumps({"event": "response_engine.illustration_narrate"}))
+
+    # ------------------------------------------------------------------
+    # Text / Illustration (Story Mode)
+    # ------------------------------------------------------------------
+
+    def _handle_text(self, event: DetectionEvent) -> None:
+        """Handle TEXT detection in STORY or READING mode."""
+        if self._mode not in (Mode.STORY, Mode.READING):
+            return
+        self._tts.speak(AudioResponse(text=event.label, priority=AudioPriority.NORMAL))
+
+    def _handle_illustration(self, event: DetectionEvent) -> None:
+        """Store illustration description as pending for next READING event."""
+        self._pending_illustration = event.label
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
@@ -374,3 +424,12 @@ class ResponseEngine:
 
     def _should_encourage(self, now: float) -> bool:
         return (now - self._last_encourage_at) >= _ENCOURAGE_THROTTLE_SECONDS
+
+    def _is_recently_spoken(self, key: tuple) -> bool:
+        last = self._last_spoken.get(key)
+        if last is None:
+            return False
+        return (time.monotonic() - last) < _DEDUP_WINDOW_SECONDS
+
+    def _mark_spoken(self, key: tuple) -> None:
+        self._last_spoken[key] = time.monotonic()
