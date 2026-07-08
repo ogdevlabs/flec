@@ -5,15 +5,28 @@ specs/001-perception-core/contracts/module-interfaces.md.
 
 These tests run BEFORE the implementation exists — they define the RED phase.
 All tests are expected to fail until OCRReader is implemented (T048).
+
+Tests that require the EasyOCR model library are skipped when it is not
+installed (e.g. in CI without model dependencies). The interface/structural
+tests always run.
 """
 
 from __future__ import annotations
+
+import importlib.util
 
 import numpy as np
 import pytest
 
 # Import the module under test — will fail (ImportError) until T048
 from flec.reading.ocr_reader import OCRReader
+
+# Mark for tests that require the actual EasyOCR library to be installed
+easyocr_available = importlib.util.find_spec("easyocr") is not None
+requires_easyocr = pytest.mark.skipif(
+    not easyocr_available,
+    reason="easyocr not installed — model-dependent tests skipped",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +99,7 @@ def corrupted_frame() -> np.ndarray:
 class TestOCRReaderContract:
     """Contract tests verifying the OCRReader interface."""
 
+    @requires_easyocr
     def test_returns_non_empty_string_on_text_frame(
         self, ocr_reader: OCRReader, text_frame: np.ndarray
     ) -> None:
@@ -120,6 +134,7 @@ class TestOCRReaderContract:
             "read_page must return str (empty or minimal) on no-text frame"
         )
 
+    @requires_easyocr
     def test_no_binary_garbage_characters_in_output(
         self, ocr_reader: OCRReader, text_frame: np.ndarray
     ) -> None:
@@ -153,6 +168,7 @@ class TestOCRReaderContract:
         result = ocr_reader.read_page(white_frame)
         assert isinstance(result, str)
 
+    @requires_easyocr
     def test_result_is_normalized_whitespace(
         self, ocr_reader: OCRReader, text_frame: np.ndarray
     ) -> None:
@@ -163,6 +179,7 @@ class TestOCRReaderContract:
             "read_page output must be stripped of leading/trailing whitespace"
         )
 
+    @requires_easyocr
     def test_multiple_calls_are_consistent(
         self, ocr_reader: OCRReader, text_frame: np.ndarray
     ) -> None:
