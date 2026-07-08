@@ -1,20 +1,16 @@
 """ResponseEngine — single orchestration point for all audio and AR output.
 
-Consumes DetectionEvents from perception modules and routes them to:
-  1. The audio queue (TTSEngine) via AudioResponse objects.
-  2. The AR overlay layer (AROverlay) for visual annotation.
-
-No other module may write to the audio queue or AR overlay directly.
+Consumes DetectionEvents from perception modules and routes them to the
+TTSEngine (audio) and AROverlay (visual). No other module writes audio
+or AR directly.
 
 Architecture:
-  - ResponseEngine is stateful: it tracks active Mode, active Challenge, and
-    wear state. It uses these to gate which events produce responses.
-  - Deduplication: same label within 3 seconds is suppressed in EXPLORATION mode
-    to avoid audio flooding.
-  - Mode isolation: shape/color narration only fires in EXPLORATION mode.
+  - Stateful: tracks active Mode, active Challenge, and WearState.
+  - Deduplication: same label within 3s suppressed in EXPLORATION mode.
+  - Mode isolation: shape/color narration only fires in EXPLORATION/CHALLENGE.
   - Structured JSON logging on every routing decision.
 
-Privacy: no frames or audio are persisted. All state is in-memory and ephemeral.
+Privacy: no frames or audio are persisted. All state in-memory and ephemeral.
 """
 
 from __future__ import annotations
@@ -23,289 +19,358 @@ import json
 import logging
 import queue
 import time
-from typing import Optional
+from typing import Optional, Protocol
 
 from flec.models import (
     AudioPriority,
     AudioResponse,
     Challenge,
     ChallengeStatus,
+    ChallengeTargetType,
+    CommandIntent,
     DetectionEvent,
     DetectionType,
     Mode,
     WearState,
 )
-from flec.audio.responses import build_exploration_response
 
 logger = logging.getLogger(__name__)
 
-# Deduplication window: same label within this many seconds → suppress repeat
-_DEDUP_WINDOW_SECONDS = 3.0
+_DEDUP_WINDOW_SECONDS: float = 3.0
+_ENCOURAGE_THROTTLE_SECONDS: float = 5.0
+
+
+# ---------------------------------------------------------------------------
+# TTS Protocol (duck-typed to avoid importing TTSEngine at module level)
+# ---------------------------------------------------------------------------
+
+
+class _TTSProtocol(Protocol):
+    def speak(self, response: AudioResponse) -> None: ...
+    def stop_current(self) -> None: ...
+
+
+class _QueueTTS:
+    """Wraps a queue.Queue so it satisfies _TTSProtocol.
+
+    Allows the Phase 4 test pattern ``ResponseEngine(audio_queue=q)`` to
+    continue working unchanged.
+    """
+
+    def __init__(self, q: queue.Queue) -> None:
+        self._q = q
+
+    def speak(self, response: AudioResponse) -> None:
+        self._q.put(response)
+
+    def stop_current(self) -> None:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# ResponseEngine
+# ---------------------------------------------------------------------------
 
 
 class ResponseEngine:
     """Routes detection events to audio and AR outputs.
 
-    Usage:
+    Accepts either a Protocol-compliant ``tts`` object or a legacy
+    ``audio_queue`` (queue.Queue) for backward compatibility with Phase 4 tests.
+
+    Usage (Phase 5+ preferred)::
+
+        engine = ResponseEngine(tts=tts_engine)
+
+    Usage (Phase 4 legacy)::
+
         audio_queue = queue.Queue()
         engine = ResponseEngine(audio_queue=audio_queue)
-        engine.set_mode(Mode.EXPLORATION)
-        engine.on_event(event)  # Enqueues AudioResponse if appropriate
     """
 
     def __init__(
         self,
+        tts: Optional[_TTSProtocol] = None,
         audio_queue: Optional[queue.Queue] = None,
-        ar_overlay=None,  # type: ignore[type-arg]  # AROverlay, optional to avoid circular import
+        ar_overlay=None,
     ) -> None:
-        """Construct the ResponseEngine.
+        if tts is not None:
+            self._tts: _TTSProtocol = tts
+        elif audio_queue is not None:
+            self._tts = _QueueTTS(audio_queue)
+        else:
+            self._tts = _QueueTTS(queue.Queue())
 
-        Args:
-            audio_queue: Queue into which AudioResponse objects are enqueued.
-                         If None, a new unbounded Queue is created.
-            ar_overlay: Optional AROverlay instance for visual annotation.
-                        If None, AR updates are skipped silently.
-        """
-        self._audio_queue: queue.Queue = audio_queue if audio_queue is not None else queue.Queue()
         self._ar = ar_overlay
         self._mode: Mode = Mode.STANDBY
-        self._challenge: Optional[Challenge] = None
         self._wear_state: WearState = WearState.OFF_HEAD
-        # Deduplication: label → last narration timestamp
+        self._challenge: Optional[Challenge] = None
         self._last_narrated: dict[str, float] = {}
+        self._last_encourage_at: float = 0.0
 
-        logger.info(json.dumps({
-            "event": "response_engine_init",
-            "mode": self._mode.name,
-        }))
+        logger.info(json.dumps({"event": "response_engine.init", "mode": self._mode.name}))
 
     # ------------------------------------------------------------------
-    # State management
+    # Properties
     # ------------------------------------------------------------------
-
-    def set_mode(self, mode: Mode) -> None:
-        """Transition the engine to a new mode.
-
-        Clears deduplication cache on mode transition.
-        """
-        if mode != self._mode:
-            logger.info(json.dumps({
-                "event": "mode_transition",
-                "from": self._mode.name,
-                "to": mode.name,
-            }))
-            self._mode = mode
-            # Clear dedup cache on mode change so new mode starts fresh
-            self._last_narrated.clear()
-
-    def set_challenge(self, challenge: Optional[Challenge]) -> None:
-        """Set or clear the active challenge."""
-        self._challenge = challenge
-        logger.info(json.dumps({
-            "event": "challenge_set",
-            "target": challenge.target_label if challenge else None,
-            "type": challenge.target_type.name if challenge else None,
-        }))
-
-    def set_wear_state(self, state: WearState) -> None:
-        """Update the known wear state (affects VOICE_CMD routing)."""
-        self._wear_state = state
 
     @property
     def mode(self) -> Mode:
-        """Current active mode."""
         return self._mode
 
     @property
+    def wear_state(self) -> WearState:
+        return self._wear_state
+
+    @property
+    def active_challenge(self) -> Optional[Challenge]:
+        return self._challenge
+
+    @property
     def challenge(self) -> Optional[Challenge]:
-        """Current active challenge, or None."""
         return self._challenge
 
     # ------------------------------------------------------------------
-    # Event routing
+    # State setters
+    # ------------------------------------------------------------------
+
+    def set_mode(self, mode: Mode) -> None:
+        previous = self._mode
+        self._mode = mode
+        self._last_narrated.clear()
+        logger.info(json.dumps({
+            "event": "response_engine.mode_changed",
+            "from": previous.name,
+            "to": mode.name,
+        }))
+
+    def set_wear_state(self, state: WearState) -> None:
+        self._wear_state = state
+
+    def set_challenge(
+        self,
+        target_label: Optional[str] = None,
+        target_type: Optional[ChallengeTargetType] = None,
+        challenge: Optional[Challenge] = None,
+        issued_at_override: Optional[float] = None,
+    ) -> None:
+        """Set active challenge.
+
+        Accepts either a pre-built ``Challenge`` object (Phase 4 pattern) or
+        ``target_label`` + ``target_type`` args (Phase 5 pattern).
+        """
+        if challenge is not None:
+            self._challenge = challenge
+        else:
+            issued_at = issued_at_override if issued_at_override is not None else time.monotonic()
+            self._challenge = Challenge(
+                target_type=target_type or ChallengeTargetType.COLOR,
+                target_label=target_label or "",
+                issued_at=issued_at,
+                status=ChallengeStatus.ACTIVE,
+            )
+        self._last_encourage_at = 0.0
+        logger.info(json.dumps({
+            "event": "response_engine.challenge_set",
+            "target_label": self._challenge.target_label,
+        }))
+
+    # ------------------------------------------------------------------
+    # Main event router
     # ------------------------------------------------------------------
 
     def on_event(self, event: DetectionEvent) -> None:
-        """Process a detection event and enqueue any resulting AudioResponse.
-
-        State-aware: respects active mode, active challenge, and wear state.
-        Never raises — errors are logged.
-        """
+        """Route a DetectionEvent to audio/AR. Never raises."""
         try:
-            self._route_event(event)
+            self._route(event)
         except Exception as exc:
             logger.error(json.dumps({
-                "event": "response_engine_error",
-                "error": str(exc),
+                "event": "response_engine.routing_error",
                 "detection_type": event.type.name,
+                "error": str(exc),
+            }))
+
+    def _route(self, event: DetectionEvent) -> None:
+        if event.type == DetectionType.VOICE_CMD:
+            self._handle_voice_cmd(event)
+        elif event.type in (DetectionType.SHAPE, DetectionType.COLOR):
+            self._handle_perception(event)
+        elif event.type == DetectionType.WEAR:
+            self._handle_wear(event)
+        else:
+            logger.debug(json.dumps({
+                "event": "response_engine.event_unhandled",
+                "type": event.type.name,
+            }))
+
+    # ------------------------------------------------------------------
+    # Voice command handling
+    # ------------------------------------------------------------------
+
+    def _handle_voice_cmd(self, event: DetectionEvent) -> None:
+        cmd = event.metadata.get("command") if event.metadata else None
+        if cmd is None:
+            return
+
+        intent = cmd.intent
+        if intent == CommandIntent.START_CHALLENGE:
+            self._start_challenge_flow(cmd)
+        elif intent == CommandIntent.CANCEL_CHALLENGE:
+            self._cancel_challenge_flow()
+        elif intent == CommandIntent.SHUTDOWN:
+            self._shutdown_flow()
+        elif intent == CommandIntent.REPEAT_CHALLENGE:
+            self._repeat_challenge_flow()
+
+    def _start_challenge_flow(self, cmd) -> None:
+        from flec.audio.responses import challenge_acknowledgment
+        target = cmd.target_label or "something"
+        target_type = cmd.target_type or ChallengeTargetType.COLOR
+        self.set_challenge(target_label=target, target_type=target_type)
+        self.set_mode(Mode.CHALLENGE)
+        self._tts.speak(AudioResponse(
+            text=challenge_acknowledgment(target),
+            priority=AudioPriority.HIGH,
+        ))
+
+    def _cancel_challenge_flow(self) -> None:
+        if self._challenge is not None:
+            self._challenge = Challenge(
+                target_type=self._challenge.target_type,
+                target_label=self._challenge.target_label,
+                issued_at=self._challenge.issued_at,
+                status=ChallengeStatus.CANCELLED,
+            )
+        self.set_mode(Mode.EXPLORATION)
+
+    def _shutdown_flow(self) -> None:
+        from flec.audio.responses import session_farewell
+        if self._wear_state != WearState.ON_HEAD:
+            logger.info(json.dumps({
+                "event": "response_engine.shutdown_ignored",
+                "reason": "mask_not_worn",
+            }))
+            return
+        self._tts.speak(AudioResponse(text=session_farewell(), priority=AudioPriority.CRITICAL))
+
+    def _repeat_challenge_flow(self) -> None:
+        if self._challenge and self._challenge.status == ChallengeStatus.ACTIVE:
+            from flec.audio.responses import challenge_hint
+            self._tts.speak(AudioResponse(
+                text=challenge_hint(self._challenge.target_label),
+                priority=AudioPriority.HIGH,
+            ))
+
+    # ------------------------------------------------------------------
+    # Perception event handling (SHAPE / COLOR)
+    # ------------------------------------------------------------------
+
+    def _handle_perception(self, event: DetectionEvent) -> None:
+        if self._mode == Mode.CHALLENGE:
+            self._handle_challenge_detection(event)
+        elif self._mode == Mode.EXPLORATION:
+            self._handle_exploration_detection(event)
+        else:
+            logger.debug(json.dumps({
+                "event": "response_engine.perception_ignored",
+                "mode": self._mode.name,
                 "label": event.label,
             }))
 
-    # ------------------------------------------------------------------
-    # Internal routing logic
-    # ------------------------------------------------------------------
-
-    def _route_event(self, event: DetectionEvent) -> None:
-        """Core routing logic — dispatches based on event type and mode."""
-
-        if event.type in (DetectionType.SHAPE, DetectionType.COLOR):
-            self._route_shape_color(event)
-
-        elif event.type == DetectionType.WEAR:
-            self._route_wear_event(event)
-
-        elif event.type == DetectionType.VOICE_CMD:
-            self._route_voice_command(event)
-
-        # AR update for spatial events (regardless of audio routing)
-        if event.bounding_box is not None and self._ar is not None:
-            self._ar.draw_detection  # lazy — called by update() externally
-
-    def _route_shape_color(self, event: DetectionEvent) -> None:
-        """Route SHAPE and COLOR events based on current mode."""
-
-        if self._mode == Mode.EXPLORATION:
-            self._handle_exploration_detection(event)
-
-        elif self._mode == Mode.CHALLENGE:
-            self._handle_challenge_detection(event)
-
-        # All other modes: no narration for shape/color events
-
-    def _handle_exploration_detection(self, event: DetectionEvent) -> None:
-        """Narrate shape/color detections in EXPLORATION mode with deduplication."""
-
-        label = event.label
-        now = time.monotonic()
-
-        # Deduplication: suppress if same label was narrated within window
-        last_t = self._last_narrated.get(label, 0.0)
-        if (now - last_t) < _DEDUP_WINDOW_SECONDS:
-            logger.debug(json.dumps({
-                "event": "narration_suppressed_dedup",
-                "label": label,
-                "seconds_since_last": round(now - last_t, 2),
-            }))
-            return
-
-        response = build_exploration_response(event)
-        self._enqueue(response)
-        self._last_narrated[label] = now
-
-        # AR update
-        if self._ar is not None and event.bounding_box is not None:
-            try:
-                # AR overlay is updated externally with frames; here we just log intent
-                logger.debug(json.dumps({
-                    "event": "ar_update_queued",
-                    "label": label,
-                }))
-            except Exception as exc:
-                logger.warning(json.dumps({
-                    "event": "ar_update_error",
-                    "error": str(exc),
-                }))
-
     def _handle_challenge_detection(self, event: DetectionEvent) -> None:
-        """Route shape/color events during CHALLENGE mode."""
+        from flec.audio.responses import challenge_celebration, challenge_encouraging, challenge_hint
 
-        if self._challenge is None or self._challenge.status != ChallengeStatus.ACTIVE:
+        challenge = self._challenge
+        if challenge is None or challenge.status != ChallengeStatus.ACTIVE:
             return
 
-        label = event.label.lower().strip()
-        target = self._challenge.target_label.lower().strip()
-
-        if label == target:
-            # Match! Play celebration
-            celebration = AudioResponse(
-                text=f"You found it! That's a {label}! Amazing!",
+        now = time.monotonic()
+        if now - challenge.issued_at >= 30.0 and self._should_encourage(now):
+            self._tts.speak(AudioResponse(
+                text=challenge_hint(challenge.target_label),
                 priority=AudioPriority.HIGH,
-                pre_cached=False,
+            ))
+            self._last_encourage_at = now
+            return
+
+        if self._is_match(event, challenge):
+            self._tts.speak(AudioResponse(
+                text=challenge_celebration(challenge.target_label),
+                priority=AudioPriority.CRITICAL,
+            ))
+            self._challenge = Challenge(
+                target_type=challenge.target_type,
+                target_label=challenge.target_label,
+                issued_at=challenge.issued_at,
+                status=ChallengeStatus.COMPLETED,
             )
-            self._enqueue(celebration)
             logger.info(json.dumps({
-                "event": "challenge_match",
-                "label": label,
-                "target": target,
+                "event": "response_engine.challenge_match",
+                "label": event.label,
+                "target": challenge.target_label,
             }))
         else:
-            # Near miss — encouraging, not discouraging (FR-007)
-            now = time.monotonic()
-            last_t = self._last_narrated.get(f"encourage_{label}", 0.0)
-            if (now - last_t) >= _DEDUP_WINDOW_SECONDS:
-                encouragement = AudioResponse(
-                    text=f"Keep looking! You're doing great!",
+            if self._should_encourage(now):
+                self._tts.speak(AudioResponse(
+                    text=challenge_encouraging(),
                     priority=AudioPriority.NORMAL,
-                    pre_cached=False,
-                )
-                self._enqueue(encouragement)
-                self._last_narrated[f"encourage_{label}"] = now
+                ))
+                self._last_encourage_at = now
 
-    def _route_wear_event(self, event: DetectionEvent) -> None:
-        """Handle WEAR state transition events."""
+    def _handle_exploration_detection(self, event: DetectionEvent) -> None:
+        from flec.audio.responses import build_exploration_response, exploration_narration
 
-        label_lower = event.label.lower()
+        now = time.monotonic()
+        label = event.label.lower()
+        if now - self._last_narrated.get(label, 0.0) < _DEDUP_WINDOW_SECONDS:
+            return
+        self._last_narrated[label] = now
 
-        if label_lower == "off_head":
-            self._wear_state = WearState.OFF_HEAD
-            # CRITICAL: put-mask-back-on response
+        try:
+            response = build_exploration_response(event)
+        except Exception:
             response = AudioResponse(
-                text="Put your mask back on, hero!",
-                priority=AudioPriority.CRITICAL,
+                text=exploration_narration(label),
+                priority=AudioPriority.NORMAL,
                 pre_cached=False,
             )
-            self._enqueue(response)
-            # Suspend active mode
-            prev_mode = self._mode
-            self._mode = Mode.STANDBY
-            logger.info(json.dumps({
-                "event": "wear_off_detected",
-                "previous_mode": prev_mode.name,
-            }))
+        self._tts.speak(response)
 
-        elif label_lower == "on_head":
+        if self._ar is not None and event.bounding_box is not None:
+            try:
+                self._ar.draw_detection(None, event)
+            except Exception:
+                pass
+
+        logger.info(json.dumps({
+            "event": "response_engine.exploration_narrated",
+            "label": event.label,
+            "confidence": event.confidence,
+        }))
+
+    # ------------------------------------------------------------------
+    # Wear event handling
+    # ------------------------------------------------------------------
+
+    def _handle_wear(self, event: DetectionEvent) -> None:
+        from flec.audio.responses import wear_off_prompt, wear_welcome
+
+        if event.label == WearState.ON_HEAD.name:
             self._wear_state = WearState.ON_HEAD
             if self._mode == Mode.STANDBY:
-                self._mode = Mode.EXPLORATION
-            logger.info(json.dumps({
-                "event": "wear_on_detected",
-                "mode": self._mode.name,
-            }))
+                self.set_mode(Mode.EXPLORATION)
+                self._tts.speak(AudioResponse(text=wear_welcome(), priority=AudioPriority.HIGH))
+        elif event.label == WearState.OFF_HEAD.name:
+            self._wear_state = WearState.OFF_HEAD
+            self._tts.speak(AudioResponse(text=wear_off_prompt(), priority=AudioPriority.CRITICAL))
+            self.set_mode(Mode.STANDBY)
 
-    def _route_voice_command(self, event: DetectionEvent) -> None:
-        """Handle VOICE_CMD events — shutdown, challenge, etc."""
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
 
-        intent = event.metadata.get("intent")
+    def _is_match(self, event: DetectionEvent, challenge: Challenge) -> bool:
+        return event.label.lower() == challenge.target_label.lower()
 
-        if intent == "SHUTDOWN":
-            if self._wear_state == WearState.ON_HEAD:
-                response = AudioResponse(
-                    text="See you next time, hero!",
-                    priority=AudioPriority.CRITICAL,
-                    pre_cached=False,
-                )
-                self._enqueue(response)
-                self._mode = Mode.STANDBY
-                logger.info(json.dumps({"event": "shutdown_voice_command"}))
-            else:
-                # Ignore shutdown when not worn (FR-001e)
-                logger.info(json.dumps({
-                    "event": "shutdown_voice_command_ignored",
-                    "reason": "mask_not_worn",
-                }))
-
-    def _enqueue(self, response: AudioResponse) -> None:
-        """Enqueue an AudioResponse onto the audio queue. Non-blocking."""
-        try:
-            self._audio_queue.put_nowait(response)
-            logger.debug(json.dumps({
-                "event": "audio_enqueued",
-                "text": response.text[:60],
-                "priority": response.priority.name,
-            }))
-        except queue.Full:
-            logger.warning(json.dumps({
-                "event": "audio_queue_full",
-                "dropped_text": response.text[:60],
-                "priority": response.priority.name,
-            }))
+    def _should_encourage(self, now: float) -> bool:
+        return (now - self._last_encourage_at) >= _ENCOURAGE_THROTTLE_SECONDS
