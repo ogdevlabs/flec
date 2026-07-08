@@ -20,9 +20,11 @@ from flec.logger import log_event
 from flec.models import (
     Challenge,
     ChallengeStatus,
+    CommandIntent,
     DetectionEvent,
     Mode,
     StoryContext,
+    VoiceCommand,
     WearState,
 )
 
@@ -183,6 +185,69 @@ class Session:
             )
         self.active_challenge = None
         self.transition_mode(Mode.EXPLORATION)
+
+    def handle_wear_event(self, state: WearState) -> bool:
+        """Handle a wear state event from WearDetector.
+
+        Transitions:
+        - ON_HEAD while STANDBY → EXPLORATION
+        - OFF_HEAD while active → STANDBY (suspend all modes)
+        - ON_HEAD while already ON_HEAD → no-op (idempotent)
+
+        Returns True if the wear state actually changed.
+        """
+        changed = self.set_wear_state(state)
+
+        log_event(
+            module="Session",
+            event_type="wear_event_handled",
+            data={
+                "state": state.name,
+                "changed": changed,
+                "mode": self.mode.name,
+            },
+        )
+        return changed
+
+    def handle_voice_command(self, cmd: VoiceCommand) -> bool:
+        """Handle a parsed voice command.
+
+        Rules:
+        - SHUTDOWN is only processed when mask is ON_HEAD (FR-001e)
+        - CANCEL_CHALLENGE cancels active challenge and returns to EXPLORATION
+        - REPEAT_CHALLENGE is a no-op on the session (routed by ResponseEngine)
+        - START_CHALLENGE is handled by the session loop (not here)
+        - UNKNOWN is silently ignored
+
+        Returns True if a session-level state change occurred.
+        """
+        if cmd.intent == CommandIntent.SHUTDOWN:
+            if self.wear_state != WearState.ON_HEAD:
+                log_event(
+                    module="Session",
+                    event_type="shutdown_command_ignored",
+                    data={"reason": "mask_not_worn", "wear_state": self.wear_state.name},
+                )
+                return False
+
+            log_event(
+                module="Session",
+                event_type="shutdown_command_accepted",
+                data={},
+            )
+            self.transition_mode(Mode.STANDBY)
+            return True
+
+        if cmd.intent == CommandIntent.CANCEL_CHALLENGE:
+            self.cancel_challenge()
+            return True
+
+        log_event(
+            module="Session",
+            event_type="voice_command_received",
+            data={"intent": cmd.intent.name, "target": cmd.target_label},
+        )
+        return False
 
     def expire_challenge_if_needed(self, now: Optional[float] = None) -> bool:
         """Check and expire challenge if past EXPIRY_SECONDS.
