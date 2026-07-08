@@ -1,7 +1,17 @@
-"""Flec entry point — boot, session loop."""
+"""Flec entry point — boot, session loop.
+
+Story Mode integration (US4, Phase 7):
+  The session loop calls ``session.process_frame_for_story_mode(page_text, has_illustration)``
+  on each processed frame. This method transitions the session to STORY mode when a
+  book-like layout is detected (dense OCR text + optional illustration) and back to
+  EXPLORATION when the book leaves the frame.
+
+  Full session loop wired in a later boot phase.
+"""
 
 import argparse
 import logging
+import queue
 import sys
 
 logger = logging.getLogger(__name__)
@@ -33,8 +43,17 @@ def main() -> None:
     )
 
     logger.info("Flec starting in %s mode", args.mode)
-    # Boot sequence and session loop will be implemented in subsequent phases.
-    logger.info("Flec ready (stub — full boot in later phases)")
+
+    # Initialise queues and session — story mode pipeline is ready.
+    # Full session loop (camera capture → OCR → IllustrationDescriber → ResponseEngine)
+    # is wired in the boot/session-loop phase.
+    audio_q: queue.Queue = queue.Queue(maxsize=50)
+    event_q: queue.Queue = queue.Queue(maxsize=200)
+
+    from flec.session import FlecSession  # noqa: PLC0415
+    _session = FlecSession(audio_queue=audio_q, event_queue=event_q)
+
+    logger.info("Flec ready — Story Mode pipeline initialised (full boot in later phases)")
 
 
 if __name__ == "__main__":

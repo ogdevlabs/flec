@@ -34,6 +34,54 @@ from flec.models import (
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Book detection heuristics
+# ---------------------------------------------------------------------------
+
+# Minimum word count on a page to consider it "book-like" (dense text)
+_MIN_TEXT_WORDS_FOR_BOOK = 5
+
+# Minimum text confidence (average) to consider a page text reliable
+_MIN_TEXT_CONFIDENCE = 0.5
+
+
+def detect_book_frame(
+    page_text: str,
+    has_illustration: bool = False,
+    text_confidence: float = 1.0,
+) -> bool:
+    """Return True if the current frame looks like a picture-book page.
+
+    A frame is considered "book-like" when:
+    1. It contains at least ``_MIN_TEXT_WORDS_FOR_BOOK`` words of readable text, OR
+    2. It contains an illustration AND at least 1 word of text.
+
+    This heuristic is intentionally permissive — false positives are acceptable
+    (brief exploration-mode narration of non-book text) while false negatives would
+    silently fail to enter story mode.
+
+    Args:
+        page_text: OCR-extracted text from the current frame.
+        has_illustration: True if an illustration region was detected.
+        text_confidence: Average OCR confidence for the text (0.0–1.0).
+
+    Returns:
+        True if the frame should trigger STORY mode.
+    """
+    words = page_text.strip().split() if page_text else []
+    word_count = len(words)
+
+    if text_confidence < _MIN_TEXT_CONFIDENCE and word_count < _MIN_TEXT_WORDS_FOR_BOOK:
+        return False
+
+    if word_count >= _MIN_TEXT_WORDS_FOR_BOOK:
+        return True
+
+    if has_illustration and word_count >= 1:
+        return True
+
+    return False
+
 
 class FlecSession:
     """Active session state machine.
@@ -222,6 +270,61 @@ class FlecSession:
                     "dropped_text": response.text[:40],
                 })
             )
+
+    # ------------------------------------------------------------------
+    # Public: story mode trigger
+    # ------------------------------------------------------------------
+
+    def process_frame_for_story_mode(
+        self,
+        page_text: str,
+        has_illustration: bool = False,
+        text_confidence: float = 1.0,
+    ) -> bool:
+        """Evaluate whether the current frame should trigger STORY mode.
+
+        Transitions the session to STORY mode if a book-like frame is detected,
+        or returns to EXPLORATION if the book layout clears.
+
+        Args:
+            page_text: OCR text extracted from the current frame (empty string if none).
+            has_illustration: True if an illustration region was detected in the frame.
+            text_confidence: Average OCR confidence for the page text (0.0–1.0).
+
+        Returns:
+            True if STORY mode is now active (either newly triggered or already active).
+        """
+        is_book = detect_book_frame(
+            page_text=page_text,
+            has_illustration=has_illustration,
+            text_confidence=text_confidence,
+        )
+
+        if is_book:
+            if self._mode != Mode.STORY:
+                self.set_mode(Mode.STORY)
+                logger.info(
+                    json.dumps({
+                        "event": "story_mode_triggered",
+                        "module": "FlecSession",
+                        "word_count": len(page_text.split()),
+                        "has_illustration": has_illustration,
+                    })
+                )
+            return True
+        else:
+            if self._mode == Mode.STORY:
+                # Book layout cleared — return to exploration, no error audio
+                self.on_book_removed()
+                self.set_mode(Mode.EXPLORATION)
+                logger.info(
+                    json.dumps({
+                        "event": "story_mode_exited",
+                        "module": "FlecSession",
+                        "reason": "no_book_layout",
+                    })
+                )
+            return False
 
     # ------------------------------------------------------------------
     # Public: story lifecycle
