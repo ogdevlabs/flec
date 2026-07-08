@@ -5,15 +5,31 @@ specs/001-perception-core/contracts/module-interfaces.md.
 
 These tests run BEFORE the implementation exists — they define the RED phase.
 All tests are expected to fail until IllustrationDescriber is implemented (T049).
+
+Tests that require the BLIP-2 model (transformers + torch) are skipped when
+those libraries are not installed (e.g. in CI without heavy ML dependencies).
+The interface/structural tests always run.
 """
 
 from __future__ import annotations
+
+import importlib.util
 
 import numpy as np
 import pytest
 
 # Import the module under test — will fail (ImportError) until T049
 from flec.reading.illustration_describer import IllustrationDescriber
+
+# Mark for tests that require transformers + torch (BLIP-2 model)
+blip2_available = (
+    importlib.util.find_spec("transformers") is not None
+    and importlib.util.find_spec("torch") is not None
+)
+requires_blip2 = pytest.mark.skipif(
+    not blip2_available,
+    reason="transformers/torch not installed — BLIP-2 model-dependent tests skipped",
+)
 
 # Technical jargon / model class labels that must NOT appear in output
 TECHNICAL_JARGON = [
@@ -93,6 +109,7 @@ def corrupted_frame() -> np.ndarray:
 class TestIllustrationDescriberContract:
     """Contract tests verifying the IllustrationDescriber interface."""
 
+    @requires_blip2
     def test_returns_non_empty_string_on_illustration(
         self, describer: IllustrationDescriber, illustration_frame: np.ndarray
     ) -> None:
@@ -131,6 +148,7 @@ class TestIllustrationDescriberContract:
         result = describer.describe(corrupted_frame)
         assert isinstance(result, str), "describe must return str even on corrupted frame"
 
+    @requires_blip2
     def test_description_is_at_most_20_words(
         self, describer: IllustrationDescriber, illustration_frame: np.ndarray
     ) -> None:
@@ -143,6 +161,7 @@ class TestIllustrationDescriberContract:
                 f"got {word_count} words: {result!r}"
             )
 
+    @requires_blip2
     def test_no_technical_jargon_in_output(
         self, describer: IllustrationDescriber, illustration_frame: np.ndarray
     ) -> None:
@@ -153,6 +172,7 @@ class TestIllustrationDescriberContract:
                 f"describe output contains technical jargon {term!r}: {result!r}"
             )
 
+    @requires_blip2
     def test_description_is_child_friendly_language(
         self, describer: IllustrationDescriber, illustration_frame: np.ndarray
     ) -> None:
@@ -163,6 +183,7 @@ class TestIllustrationDescriberContract:
                 f"describe output contains garbage character: {char!r} (ord={ord(char)})"
             )
 
+    @requires_blip2
     def test_multiple_calls_on_same_frame_are_consistent(
         self, describer: IllustrationDescriber, illustration_frame: np.ndarray
     ) -> None:
