@@ -203,18 +203,19 @@ class CommandSTT:
     def _resolve_target(
         self, word: str
     ) -> tuple[Optional[str], Optional[ChallengeTargetType]]:
-        """Classify a candidate word as COLOR, SHAPE, or unknown.
+        """Classify a candidate "find X" word as COLOR, SHAPE, or OBJECT.
 
-        Returns:
-            (label, target_type) where label is lowercase canonical form,
-            or (None, None) if the word is unrecognised.
+        Colors and shapes match the fixed spec vocabularies; anything else is
+        treated as a real-world OBJECT target (matched against YOLO detections
+        by the ResponseEngine). Returns (label, target_type); label is the
+        lowercase canonical form.
         """
         word_lower = word.lower()
         if word_lower in _COLOR_KEYWORDS:
             return word_lower, ChallengeTargetType.COLOR
         if word_lower in _SHAPE_KEYWORDS:
             return word_lower, ChallengeTargetType.SHAPE
-        return None, None
+        return word_lower, ChallengeTargetType.OBJECT
 
     def _run_whisper(self, audio_segment: bytes) -> str:
         """Execute Whisper transcription. Called only when model is loaded."""

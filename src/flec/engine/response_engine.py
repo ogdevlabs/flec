@@ -492,7 +492,22 @@ class ResponseEngine:
     # ------------------------------------------------------------------
 
     def _is_match(self, event: DetectionEvent, challenge: Challenge) -> bool:
-        return event.label.lower() == challenge.target_label.lower()
+        target = challenge.target_label.lower().strip()
+        label = event.label.lower().strip()
+
+        # Color challenges: satisfied by a COLOR detection of that color, or by
+        # any OBJECT whose dominant color matches (so "find something red" works
+        # in the live YOLO-only pipeline, where a red cup counts).
+        if challenge.target_type == ChallengeTargetType.COLOR:
+            if event.type == DetectionType.COLOR:
+                return label == target
+            if event.type == DetectionType.OBJECT:
+                obj_color = (event.metadata or {}).get("color")
+                return bool(obj_color) and obj_color.lower() == target
+            return False
+
+        # Shape / object challenges: match the label, tolerating singular/plural.
+        return label == target or label == target + "s" or target == label + "s"
 
     def _should_encourage(self, now: float) -> bool:
         return (now - self._last_encourage_at) >= _ENCOURAGE_THROTTLE_SECONDS

@@ -80,6 +80,7 @@ class ChallengeTargetType(Enum):
 
     COLOR = auto()
     SHAPE = auto()
+    OBJECT = auto()   # A real-world object recognised by YOLO (e.g. "cup", "ball")
 
 
 class ChallengeStatus(Enum):
