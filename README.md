@@ -47,8 +47,19 @@ and resumable — re-run if interrupted.
 ### 3. Run in dev mode
 
 ```bash
+# Integrated webcam with a live preview window
+python -m flec.main --mode dev --camera integrated --preview
+
+# iPhone Continuity Camera (must be awake, unlocked, Continuity Camera enabled)
+python -m flec.main --mode dev --camera iphone --preview
+
+# Headless (JSON logs only)
 python -m flec.main --mode dev
 ```
+
+See **[docs/RUNNING.md](docs/RUNNING.md)** for the full local run guide —
+camera permission, camera selection (`--camera` / `--camera-index`), the live
+`--preview` window, and troubleshooting.
 
 ### 4. Validate without running
 
