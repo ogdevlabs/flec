@@ -17,11 +17,46 @@ import queue
 import sys
 import threading
 import time
+from collections import deque
 from typing import Optional
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+class _DetectionStabilizer:
+    """Suppress transient false positives from the frame-by-frame detector.
+
+    A detection is only passed through when its ``(type, label)`` is present in
+    the *current* frame AND has appeared in at least ``min_hits`` of the last
+    ``window`` frames. This stops the narrator from rambling shapes/colors that
+    flicker in for a single noisy frame, while still reacting quickly (a real
+    object steady in view clears the threshold within a few frames) and going
+    quiet as soon as the object leaves the frame.
+    """
+
+    def __init__(self, window: int = 6, min_hits: int = 4) -> None:
+        self._window = window
+        self._min_hits = min_hits
+        self._history: deque = deque(maxlen=window)
+
+    def filter(self, events: list) -> list:
+        # Keep the highest-confidence event per (type, label) this frame.
+        current: dict = {}
+        for e in events:
+            key = (e.type, e.label)
+            if key not in current or e.confidence > current[key].confidence:
+                current[key] = e
+
+        self._history.append(set(current.keys()))
+
+        counts: dict = {}
+        for keys in self._history:
+            for key in keys:
+                counts[key] = counts.get(key, 0) + 1
+
+        return [e for key, e in current.items() if counts[key] >= self._min_hits]
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +117,7 @@ class FlecSession:
         # Perception modules.
         self._finger_tracker = FingerTracker()
         self._shape_detector = ShapeColorDetector()
+        self._stabilizer = _DetectionStabilizer()
 
         # Real audio output (Coqui VITS → say → log, per backend availability).
         self._tts_engine = TTSEngine(backend=tts_backend)
@@ -134,7 +170,9 @@ class FlecSession:
         from flec.models import DetectionEvent, DetectionType
 
         # 1. Object identification — shapes & colors (Exploration / Challenge).
-        for event in self._shape_detector.detect(frame):
+        #    Gate through the stabilizer so only steady, real detections are
+        #    narrated (drops single-frame phantom shapes/colors).
+        for event in self._stabilizer.filter(self._shape_detector.detect(frame)):
             self._response_engine.on_event(event)
 
         # 2. Finger tracking (Reading mode).

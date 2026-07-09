@@ -67,11 +67,18 @@ _HSV_RANGES: dict[str, list[tuple[np.ndarray, np.ndarray]]] = {
     ],
 }
 
-# Minimum pixel area for a color region to be considered a detection
-_MIN_COLOR_AREA_FRACTION = 0.005  # 0.5% of frame area
+# Minimum pixel area for a color region to be considered a detection.
+# 3% of frame: a real held-up object, not a stray blob of matching pixels.
+_MIN_COLOR_AREA_FRACTION = 0.03
 
-# Minimum contour area (as fraction of frame) for shape detection
-_MIN_SHAPE_AREA_FRACTION = 0.005
+# Minimum contour area (as fraction of frame) for shape detection.
+# Raised from 0.5% → 3%: on a live scene the old floor turned every edge and
+# shadow contour into a phantom shape.
+_MIN_SHAPE_AREA_FRACTION = 0.03
+
+# Drop low-confidence contour shapes — faint/irregular contours in a cluttered
+# real-world frame classify as spurious shapes below this.
+_MIN_SHAPE_CONFIDENCE = 0.6
 
 
 # ---------------------------------------------------------------------------
@@ -408,6 +415,8 @@ class ShapeColorDetector:
                 # Confidence: based on area relative to frame + shape regularity
                 area_score = min(1.0, area / (frame_h * frame_w * 0.20))
                 confidence = float(np.clip(0.5 + area_score * 0.5, 0.3, 0.95))
+                if confidence < _MIN_SHAPE_CONFIDENCE:
+                    continue
 
                 event = DetectionEvent(
                     type=DetectionType.SHAPE,
