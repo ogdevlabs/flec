@@ -281,10 +281,14 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # macOS: OpenCV opens the camera on a background thread and cannot show the
-    # permission prompt from there. Skipping its in-thread auth request relies on
-    # the terminal already holding Camera permission (Privacy & Security → Camera).
-    os.environ.setdefault("OPENCV_AVFOUNDATION_SKIP_AUTH", "1")
+    # macOS: let OpenCV request Camera authorization so the system permission
+    # prompt appears on first run. SKIP_AUTH=1 suppresses that request, which
+    # hard-fails with "not authorized to capture video" and no prompt on any
+    # app that hasn't already been granted Camera access. Requesting works from
+    # OpenCV's capture thread and, once granted, the grant is cached for the
+    # hosting app (Terminal / PyCharm / VS Code → Privacy & Security → Camera).
+    # Still overridable: `export OPENCV_AVFOUNDATION_SKIP_AUTH=1` to force-skip.
+    os.environ.setdefault("OPENCV_AVFOUNDATION_SKIP_AUTH", "0")
 
     logging.basicConfig(
         level=getattr(logging, args.log_level),
