@@ -8,8 +8,11 @@ mediapipe>=0.10.0,<0.10.30
 openwakeword>=0.6.0
 openai-whisper
 
-# TTS (Coqui)
+# TTS (Coqui) — needs the espeak-ng system binary for phonemisation
 TTS>=0.22.0
+
+# Audio I/O — mic capture (voice commands) and TTS playback
+sounddevice>=0.4.6
 
 # OCR and image understanding
 easyocr>=1.7.0

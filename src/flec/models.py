@@ -68,6 +68,10 @@ class CommandIntent(Enum):
     CANCEL_CHALLENGE = auto()   # "stop" / "cancel"
     REPEAT_CHALLENGE = auto()   # "say it again" / "repeat"
     SHUTDOWN = auto()           # "Hey Flec, off"
+    SWITCH_EXPLORATION = auto() # "exploration" / "explore" / "look around"
+    SWITCH_READING = auto()     # "reading" / "read"
+    SWITCH_STORY = auto()       # "story" / "story time"
+    SWITCH_CHALLENGE = auto()   # bare "challenge" / "game" (no target yet)
 
 
 class ChallengeTargetType(Enum):

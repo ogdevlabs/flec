@@ -185,3 +185,25 @@ def wear_off_prompt() -> str:
 
 def session_farewell() -> str:
     return "See you next time, hero!"
+
+
+# ---------------------------------------------------------------------------
+# Mode switching (voice-commanded)
+# ---------------------------------------------------------------------------
+
+
+def mode_switch_confirmation(mode) -> str:
+    """Child-friendly confirmation spoken when a mode is entered by voice.
+
+    ``mode`` is a flec.models.Mode member; falls back to a neutral "Okay!"
+    for any mode without a dedicated line.
+    """
+    from flec.models import Mode
+
+    phrases = {
+        Mode.EXPLORATION: ["Let's explore!", "Exploration time!", "Let's look around!"],
+        Mode.READING: ["Reading time!", "Let's read together!", "Point at the words!"],
+        Mode.STORY: ["Story time!", "Let's read a story!", "Snuggle up for a story!"],
+        Mode.CHALLENGE: ["Challenge time!", "Let's play a game!", "Ready to find things?"],
+    }
+    return random.choice(phrases.get(mode, ["Okay!"]))

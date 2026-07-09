@@ -29,59 +29,121 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-class FlecSession:
-    """Manages the per-frame perception loop for one session.
+def _load_whisper():
+    """Load the cached Whisper tiny model, or return None if unavailable.
 
-    Runs in dev mode: FingerTracker + ResponseEngine wired together.
-    OCR results are fed to FingerTracker.update_ocr() when available.
+    Degrades gracefully: any failure (missing package/model, no network for a
+    first fetch) leaves voice transcription disabled rather than crashing.
+    """
+    try:
+        import whisper  # heavy import; done once at boot
+
+        model = whisper.load_model("tiny", download_root=".models/whisper-tiny")
+        logger.info(json.dumps({"event": "whisper_loaded", "model": "tiny"}))
+        return model
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(json.dumps({"event": "whisper_unavailable", "error": str(exc)}))
+        return None
+
+
+class FlecSession:
+    """Manages the per-frame perception loop for one dev session.
+
+    Wires the queue-decoupled pipeline for dev use:
+      - ShapeColorDetector → SHAPE/COLOR events (object identification).
+      - FingerTracker       → FINGER events (Reading mode).
+      - MicListener + CommandSTT → VoiceCommands, routed as VOICE_CMD events so
+        the caregiver can switch modes on the fly by speaking the mode name.
+      - ResponseEngine      → single output gatekeeper, driving a real TTSEngine.
+
+    Voice commands are captured on the mic thread but *routed* on the main
+    (frame) thread via ``drain_voice_commands()`` so ResponseEngine.on_event is
+    only ever called from one thread.
     """
 
-    def __init__(self, mode: str = "dev") -> None:
+    def __init__(
+        self, mode: str = "dev", tts_backend: str = "coqui", voice: bool = True
+    ) -> None:
         self._run_mode = mode
         self._running = False
-        self._frame_thread: Optional[threading.Thread] = None
 
         # Lazy imports (keep top-level import cost low at startup).
         from flec.perception.finger_tracker import FingerTracker
+        from flec.perception.shape_color_detector import ShapeColorDetector
         from flec.engine.response_engine import ResponseEngine
+        from flec.audio.tts import TTSEngine
         from flec.models import Mode as FlecMode
 
-        # Shared event queue (perception → response engine).
+        # Shared event queue (reserved for the queue-decoupled contract) and a
+        # thread-safe hand-off queue for mic-captured voice commands.
         self._event_queue: queue.Queue = queue.Queue(maxsize=500)
+        self._voice_cmd_queue: queue.Queue = queue.Queue(maxsize=50)
 
-        # Audio output queue (response engine → TTS — stub for now).
-        self._audio_queue: queue.Queue = queue.Queue(maxsize=100)
-
+        # Perception modules.
         self._finger_tracker = FingerTracker()
-        self._response_engine = ResponseEngine(audio_queue=self._audio_queue)
+        self._shape_detector = ShapeColorDetector()
 
-        # Start in READING mode for dev testing of this phase.
-        self._response_engine.set_mode(FlecMode.READING)
+        # Real audio output (Coqui VITS → say → log, per backend availability).
+        self._tts_engine = TTSEngine(backend=tts_backend)
+        self._response_engine = ResponseEngine(tts=self._tts_engine)
 
-        logger.info(json.dumps({"event": "flec_session_init", "run_mode": mode}))
+        # Boot into Exploration so the mask narrates objects it sees right away.
+        self._response_engine.set_mode(FlecMode.EXPLORATION)
+
+        # Microphone front-end (optional). Only started if voice is requested
+        # and a Whisper model + mic device are actually available.
+        self._mic: Optional[object] = None
+        if voice:
+            self._start_mic()
+
+        logger.info(json.dumps({
+            "event": "flec_session_init",
+            "run_mode": mode,
+            "tts_backend": tts_backend,
+            "voice": bool(self._mic),
+        }))
+
+    def _start_mic(self) -> None:
+        from flec.speech.command_stt import CommandSTT
+        from flec.speech.mic_listener import MicListener
+
+        whisper_model = _load_whisper()
+        if whisper_model is None:
+            logger.warning(json.dumps({
+                "event": "voice_disabled",
+                "reason": "whisper_model_unavailable",
+            }))
+            return
+
+        stt = CommandSTT(whisper_model=whisper_model)
+        mic = MicListener(command_stt=stt, on_command=self._voice_cmd_queue.put)
+        if mic.start():
+            self._mic = mic
+        else:
+            logger.warning(json.dumps({
+                "event": "voice_disabled", "reason": "mic_unavailable",
+            }))
 
     def process_frame(self, frame: np.ndarray, ocr_result: Optional[list[str]] = None) -> None:
         """Process a single camera frame through the perception pipeline.
 
-        Called per-frame by the camera capture loop (or tests).
-
-        Args:
-            frame:      BGR numpy array (HxWx3).
-            ocr_result: Text regions from the latest OCR pass, if available.
-                        Fed to FingerTracker.update_ocr() to populate nearest_text.
+        Runs object detection (shapes/colors) and finger tracking, routing each
+        resulting DetectionEvent through the ResponseEngine. Called per-frame by
+        the camera capture loop (or tests).
         """
         from flec.models import DetectionEvent, DetectionType
 
-        # 1. Run FingerTracker.
+        # 1. Object identification — shapes & colors (Exploration / Challenge).
+        for event in self._shape_detector.detect(frame):
+            self._response_engine.on_event(event)
+
+        # 2. Finger tracking (Reading mode).
         state = self._finger_tracker.update(frame)
 
-        # 2. Inject OCR result if provided.
         if ocr_result is not None:
             self._finger_tracker.update_ocr(text_regions=ocr_result)
-            # Re-read state after OCR update (nearest_text may have changed).
             state = self._finger_tracker.current_state
 
-        # 3. Emit DetectionEvent(FINGER) if finger is detected.
         if state.detected or state.intent.name != "IDLE":
             event = DetectionEvent(
                 type=DetectionType.FINGER,
@@ -96,29 +158,41 @@ class FlecSession:
                     "velocity": state.velocity,
                 },
             )
-            # 4. Route event through ResponseEngine.
             self._response_engine.on_event(event)
 
-            logger.debug(
-                json.dumps(
-                    {
-                        "event": "frame_processed",
-                        "detected": state.detected,
-                        "intent": state.intent.name,
-                        "nearest_text": state.nearest_text,
-                    }
+    def drain_voice_commands(self) -> None:
+        """Route any mic-captured VoiceCommands as VOICE_CMD events.
+
+        Called on the main loop thread so on_event stays single-threaded.
+        """
+        from flec.models import DetectionEvent, DetectionType
+
+        while not self._voice_cmd_queue.empty():
+            try:
+                cmd = self._voice_cmd_queue.get_nowait()
+            except queue.Empty:
+                break
+            self._response_engine.on_event(
+                DetectionEvent(
+                    type=DetectionType.VOICE_CMD,
+                    label=cmd.intent.name,
+                    confidence=1.0,
+                    metadata={"command": cmd},
                 )
             )
 
     def drain_audio_queue(self) -> list:
-        """Return and clear all pending AudioResponses (for testing / logging)."""
-        responses = []
-        while not self._audio_queue.empty():
-            try:
-                responses.append(self._audio_queue.get_nowait())
-            except queue.Empty:
-                break
-        return responses
+        """Deprecated no-op: audio now plays via TTSEngine, not a queue.
+
+        Retained so the dev loop's optional logging block stays valid.
+        """
+        return []
+
+    def shutdown(self) -> None:
+        """Stop the mic thread and TTS playback thread cleanly."""
+        if self._mic is not None:
+            self._mic.stop()  # type: ignore[attr-defined]
+        self._tts_engine.shutdown()
 
     def reset_reading_state(self) -> None:
         """Reset FingerTracker on mode transitions."""
@@ -184,6 +258,27 @@ def main() -> None:
         help="Explicit OpenCV device index. Takes precedence over --camera. "
         "Run scripts/list_cameras.py to discover indices.",
     )
+    parser.add_argument(
+        "--tts",
+        choices=["coqui", "say", "off"],
+        default="coqui",
+        help="TTS backend: 'coqui' (offline VITS, production; needs espeak-ng), "
+        "'say' (macOS dev fallback), or 'off' (log narration text only). "
+        "'coqui' auto-falls back to say/log when unavailable.",
+    )
+    parser.add_argument(
+        "--voice",
+        dest="voice",
+        action="store_true",
+        default=True,
+        help="Enable microphone voice commands / mode switching (default).",
+    )
+    parser.add_argument(
+        "--no-voice",
+        dest="voice",
+        action="store_false",
+        help="Disable the microphone listener (perception + audio out only).",
+    )
     args = parser.parse_args()
 
     # macOS: OpenCV opens the camera on a background thread and cannot show the
@@ -203,7 +298,7 @@ def main() -> None:
         logger.info("Dry-run: configuration validated — exiting without starting session loop")
         return
 
-    session = FlecSession(mode=args.mode)
+    session = FlecSession(mode=args.mode, tts_backend=args.tts, voice=args.voice)
     logger.info(
         json.dumps({"event": "flec_ready", "note": "session loop ready — awaiting frames"})
     )
@@ -341,6 +436,10 @@ def _run_session_loop(
                 time.sleep(frame_interval or 0.03)
                 continue
 
+            # Route any voice commands captured since the last frame (mode
+            # switches, challenges) before processing perception.
+            session.drain_voice_commands()
+
             session.process_frame(frame, ocr_result=None)
             frame_count += 1
 
@@ -372,6 +471,7 @@ def _run_session_loop(
         logger.info(json.dumps({"event": "flec_shutdown", "reason": "keyboard_interrupt"}))
     finally:
         camera.stop()
+        session.shutdown()
         if cv2 is not None:
             cv2.destroyAllWindows()
         logger.info(

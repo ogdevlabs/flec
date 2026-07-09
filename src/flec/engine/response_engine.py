@@ -249,6 +249,23 @@ class ResponseEngine:
             self._shutdown_flow()
         elif intent == CommandIntent.REPEAT_CHALLENGE:
             self._repeat_challenge_flow()
+        elif intent == CommandIntent.SWITCH_EXPLORATION:
+            self._switch_mode_flow(Mode.EXPLORATION)
+        elif intent == CommandIntent.SWITCH_READING:
+            self._switch_mode_flow(Mode.READING)
+        elif intent == CommandIntent.SWITCH_STORY:
+            self._switch_mode_flow(Mode.STORY)
+        elif intent == CommandIntent.SWITCH_CHALLENGE:
+            self._switch_mode_flow(Mode.CHALLENGE)
+
+    def _switch_mode_flow(self, mode: Mode) -> None:
+        """Enter ``mode`` on a spoken mode-switch command and confirm audibly."""
+        from flec.audio.responses import mode_switch_confirmation
+        self.set_mode(mode)
+        self._tts.speak(AudioResponse(
+            text=mode_switch_confirmation(mode),
+            priority=AudioPriority.HIGH,
+        ))
 
     def _start_challenge_flow(self, cmd) -> None:
         from flec.audio.responses import challenge_acknowledgment
