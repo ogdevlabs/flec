@@ -1,7 +1,8 @@
 # Core CV and perception
 opencv-python>=4.8.0
 ultralytics>=8.0.0
-mediapipe>=0.10.0
+# Pinned <0.10.30: newer mediapipe dropped the legacy mp.solutions API used by finger_tracker
+mediapipe>=0.10.0,<0.10.30
 
 # Speech: wake word and STT
 openwakeword>=0.6.0
