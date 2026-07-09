@@ -97,7 +97,11 @@ class FlecSession:
     """
 
     def __init__(
-        self, mode: str = "dev", tts_backend: str = "coqui", voice: bool = True
+        self,
+        mode: str = "dev",
+        tts_backend: str = "coqui",
+        voice: bool = True,
+        shapes: bool = False,
     ) -> None:
         self._run_mode = mode
         self._running = False
@@ -116,7 +120,9 @@ class FlecSession:
 
         # Perception modules.
         self._finger_tracker = FingerTracker()
-        self._shape_detector = ShapeColorDetector()
+        # YOLO is the source of truth for objects; contour/HSV shape heuristics
+        # are opt-in (--shapes) for the geometric-shape learning mode.
+        self._shape_detector = ShapeColorDetector(enable_contour_shapes=shapes)
         self._stabilizer = _DetectionStabilizer()
 
         # Real audio output (Coqui VITS → say → log, per backend availability).
@@ -137,6 +143,7 @@ class FlecSession:
             "run_mode": mode,
             "tts_backend": tts_backend,
             "voice": bool(self._mic),
+            "contour_shapes": shapes,
         }))
 
     def _start_mic(self) -> None:
@@ -317,6 +324,14 @@ def main() -> None:
         action="store_false",
         help="Disable the microphone listener (perception + audio out only).",
     )
+    parser.add_argument(
+        "--shapes",
+        action="store_true",
+        default=False,
+        help="Also run the contour/HSV geometric-shape + color heuristics "
+        "(shape-learning mode). Off by default: YOLO is the source of truth for "
+        "what's in frame. Set FLEC_YOLO_MODEL to use a larger/custom model.",
+    )
     args = parser.parse_args()
 
     # macOS: let OpenCV request Camera authorization so the system permission
@@ -340,7 +355,9 @@ def main() -> None:
         logger.info("Dry-run: configuration validated — exiting without starting session loop")
         return
 
-    session = FlecSession(mode=args.mode, tts_backend=args.tts, voice=args.voice)
+    session = FlecSession(
+        mode=args.mode, tts_backend=args.tts, voice=args.voice, shapes=args.shapes
+    )
     logger.info(
         json.dumps({"event": "flec_ready", "note": "session loop ready — awaiting frames"})
     )

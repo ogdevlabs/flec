@@ -216,7 +216,7 @@ class ResponseEngine:
         etype = event.type
         if etype == DetectionType.VOICE_CMD:
             self._handle_voice_cmd(event)
-        elif etype in (DetectionType.SHAPE, DetectionType.COLOR):
+        elif etype in (DetectionType.SHAPE, DetectionType.COLOR, DetectionType.OBJECT):
             self._handle_perception(event)
         elif etype == DetectionType.WEAR:
             self._handle_wear(event)

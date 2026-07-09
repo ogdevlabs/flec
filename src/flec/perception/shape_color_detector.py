@@ -80,6 +80,14 @@ _MIN_SHAPE_AREA_FRACTION = 0.03
 # real-world frame classify as spurious shapes below this.
 _MIN_SHAPE_CONFIDENCE = 0.6
 
+# YOLO is the authoritative real-world object detector. Only accept boxes at or
+# above this confidence so narration stays grounded in what's actually there.
+_MIN_YOLO_CONFIDENCE = 0.35
+
+# A detected object is described with a color only when that color covers at
+# least this fraction of its bounding box (avoids naming an incidental tint).
+_OBJECT_COLOR_MIN_FRACTION = 0.18
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -251,13 +259,31 @@ class ShapeColorDetector:
 
     _MODELS_DIR = Path(".models")
 
-    def __init__(self, model_path: Optional[Path] = None) -> None:
-        self._yolo = _try_load_yolo(
-            model_path if model_path is not None else self._MODELS_DIR / "yolov8n.pt"
-        )
+    def __init__(
+        self,
+        model_path: Optional[Path] = None,
+        enable_contour_shapes: bool = True,
+    ) -> None:
+        """Args:
+            model_path: YOLO weights. Defaults to FLEC_YOLO_MODEL env var, else
+                the cached ``.models/yolov8n.pt`` (nano — the on-device fit).
+                Point this at a larger/custom trained model for higher accuracy.
+            enable_contour_shapes: When True (default, used by the shape/color
+                contract tests and the optional ``--shapes`` learning mode), also
+                run the contour/HSV geometric-shape heuristics. The live session
+                sets this False so YOLO is the sole source of truth and the
+                heuristics can't narrate phantom shapes.
+        """
+        if model_path is None:
+            env_model = os.environ.get("FLEC_YOLO_MODEL")
+            model_path = Path(env_model) if env_model else self._MODELS_DIR / "yolov8n.pt"
+        self._yolo = _try_load_yolo(model_path)
+        self._enable_contour = enable_contour_shapes
         logger.info(json.dumps({
             "event": "shape_color_detector_init",
             "yolo_available": self._yolo is not None,
+            "model_path": str(model_path),
+            "contour_shapes": enable_contour_shapes,
         }))
 
     # ------------------------------------------------------------------
@@ -289,22 +315,20 @@ class ShapeColorDetector:
             return []
 
         frame_h, frame_w = frame.shape[:2]
-        min_area = frame_h * frame_w * _MIN_SHAPE_AREA_FRACTION
 
         events: list[DetectionEvent] = []
 
-        # Step 1: Color detection via HSV ranges
-        color_events = self._detect_colors(frame, frame_h, frame_w)
-        events.extend(color_events)
-
-        # Step 2: Contour-based shape classification
-        shape_events = self._detect_shapes(frame, frame_h, frame_w, min_area)
-        events.extend(shape_events)
-
-        # Step 3: YOLOv8n augmentation (if model available)
+        # Step 1 (authoritative): YOLO real-world object recognition.
         if self._yolo is not None:
-            yolo_events = self._detect_yolo(frame, frame_h, frame_w)
-            events.extend(yolo_events)
+            events.extend(self._detect_yolo(frame, frame_h, frame_w))
+
+        # Step 2 (optional): contour/HSV geometric-shape + color heuristics.
+        # Off in the live session (YOLO is source of truth); on for the
+        # shape-learning mode and the detector contract tests.
+        if self._enable_contour:
+            min_area = frame_h * frame_w * _MIN_SHAPE_AREA_FRACTION
+            events.extend(self._detect_colors(frame, frame_h, frame_w))
+            events.extend(self._detect_shapes(frame, frame_h, frame_w, min_area))
 
         # Log all detections
         if events:
@@ -445,52 +469,102 @@ class ShapeColorDetector:
     def _detect_yolo(
         self, frame: np.ndarray, frame_h: int, frame_w: int
     ) -> list[DetectionEvent]:
-        """Augment detection using YOLOv8n for real-world robustness."""
-        events: list[DetectionEvent] = []
+        """Recognise real-world objects with YOLO — the authoritative detector.
+
+        Emits one OBJECT event per distinct class (highest-confidence instance),
+        with the object's dominant color in metadata for richer narration
+        ("a red cup"). Never raises.
+        """
+        best_by_label: dict[str, tuple[float, DetectionEvent]] = {}
         try:
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
             results = self._yolo(frame, verbose=False)
             for result in results:
                 if result.boxes is None:
                     continue
+                names = result.names
                 for box in result.boxes:
-                    cls_id = int(box.cls[0])
                     conf = float(box.conf[0])
-                    if conf < 0.3:
+                    if conf < _MIN_YOLO_CONFIDENCE:
                         continue
-                    label = result.names.get(cls_id, "unknown")
+                    cls_id = int(box.cls[0])
+                    label = _friendly_object_name(names.get(cls_id, "object"))
+
                     x1, y1, x2, y2 = box.xyxy[0].tolist()
-                    bbox = _to_bbox(
-                        int(x1), int(y1),
-                        int(x2 - x1), int(y2 - y1),
-                        frame_h, frame_w
-                    )
-                    # Map YOLO labels to spec vocabulary where possible
-                    normalized_label = _map_yolo_label(label)
-                    if normalized_label is None:
-                        continue
-                    event = DetectionEvent(
-                        type=DetectionType.SHAPE,
-                        label=normalized_label,
-                        confidence=min(1.0, conf),
-                        bounding_box=bbox,
-                    )
-                    events.append(event)
+                    x, y = int(x1), int(y1)
+                    w, h = int(x2 - x1), int(y2 - y1)
+                    bbox = _to_bbox(x, y, w, h, frame_h, frame_w)
+
+                    # Never describe a person by color (avoids narrating a
+                    # race-adjacent descriptor to a child); color applies to
+                    # things, not people.
+                    if label == "person":
+                        color = None
+                    else:
+                        roi = hsv[max(0, y): y + h, max(0, x): x + w]
+                        color = _dominant_color(roi)
+
+                    if label not in best_by_label or conf > best_by_label[label][0]:
+                        best_by_label[label] = (
+                            conf,
+                            DetectionEvent(
+                                type=DetectionType.OBJECT,
+                                label=label,
+                                confidence=min(1.0, conf),
+                                bounding_box=bbox,
+                                metadata={"color": color, "raw_label": names.get(cls_id)},
+                            ),
+                        )
         except Exception as exc:
             logger.warning(json.dumps({
                 "event": "yolo_inference_error",
                 "error": str(exc),
             }))
-        return events
+        return [event for _conf, event in best_by_label.values()]
 
 
-def _map_yolo_label(label: str) -> Optional[str]:
-    """Map a YOLO class label to a spec shape/color vocabulary word, or None."""
-    # YOLO detects objects; map common objects to shape associations
-    # This is a best-effort mapping — primarily used for real-world scenes
-    mapping = {
-        "circle": "circle",
-        "square": "square",
-        "rectangle": "rectangle",
-        "triangle": "triangle",
-    }
-    return mapping.get(label.lower())
+# COCO/YOLO class names that read awkwardly to a toddler → friendly words.
+_YOLO_FRIENDLY_NAMES: dict[str, str] = {
+    "tv": "TV", "tvmonitor": "TV",
+    "cell phone": "phone", "cellphone": "phone",
+    "pottedplant": "plant", "potted plant": "plant",
+    "diningtable": "table", "dining table": "table",
+    "sofa": "couch", "aeroplane": "airplane", "motorbike": "motorcycle",
+    "remote": "remote control", "sports ball": "ball", "wine glass": "glass",
+    "hair drier": "hair dryer",
+}
+
+
+def _friendly_object_name(label: str) -> str:
+    """Map a YOLO class name to a child-friendly word (underscores → spaces)."""
+    key = label.lower().strip()
+    return _YOLO_FRIENDLY_NAMES.get(key, key.replace("_", " "))
+
+
+def _dominant_color(hsv_roi: np.ndarray) -> Optional[str]:
+    """Return the dominant spec color within an HSV region, or None.
+
+    Only returns a color that covers at least ``_OBJECT_COLOR_MIN_FRACTION`` of
+    the region, so an object is named with a color only when it really has one.
+    """
+    if hsv_roi is None or hsv_roi.size == 0:
+        return None
+    total = hsv_roi.shape[0] * hsv_roi.shape[1]
+    if total == 0:
+        return None
+
+    best_name: Optional[str] = None
+    best_count = 0
+    for color_name, ranges in _HSV_RANGES.items():
+        mask = None
+        for lower, upper in ranges:
+            m = cv2.inRange(hsv_roi, lower, upper)
+            mask = m if mask is None else cv2.bitwise_or(mask, m)
+        count = int(cv2.countNonZero(mask))
+        if count > best_count:
+            best_count = count
+            best_name = color_name
+
+    if best_name is not None and best_count >= _OBJECT_COLOR_MIN_FRACTION * total:
+        return best_name
+    return None

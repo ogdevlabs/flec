@@ -41,6 +41,7 @@ class DetectionType(Enum):
 
     SHAPE = auto()
     COLOR = auto()
+    OBJECT = auto()         # Real-world object recognised by YOLO (e.g. "cup", "dog")
     WEAR = auto()           # Wear state transition
     FINGER = auto()         # Finger tracking update
     TEXT = auto()           # OCR text found
