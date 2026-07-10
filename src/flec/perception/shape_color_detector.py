@@ -81,8 +81,9 @@ _MIN_SHAPE_AREA_FRACTION = 0.03
 _MIN_SHAPE_CONFIDENCE = 0.6
 
 # YOLO is the authoritative real-world object detector. Only accept boxes at or
-# above this confidence so narration stays grounded in what's actually there.
-_MIN_YOLO_CONFIDENCE = 0.35
+# above this confidence so narration stays grounded in what's actually there —
+# a higher bar means fewer confident-but-wrong guesses on launch.
+_MIN_YOLO_CONFIDENCE = 0.5
 
 # A detected object is described with a color only when that color covers at
 # least this fraction of its bounding box (avoids naming an incidental tint).

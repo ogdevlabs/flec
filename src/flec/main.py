@@ -538,10 +538,21 @@ def _run_session_loop(
         )
 
 
+# Per-mode banner colors (BGR) for the preview window — one active mode at a time.
+_MODE_COLORS = {
+    "EXPLORATION": (80, 200, 80),    # green
+    "READING": (220, 150, 40),       # blue
+    "STORY": (200, 80, 200),         # magenta
+    "CHALLENGE": (40, 160, 240),     # orange
+    "STANDBY": (120, 120, 120),      # gray
+}
+
+
 def _render_preview(frame, session, overlay, frame_count, cv2):
     """Return a copy of ``frame`` annotated with the fingertip overlay + HUD.
 
-    Never mutates the source frame; all drawing is on an in-memory copy.
+    A full-width top banner, colored per mode, makes the single active mode
+    unmistakable. Never mutates the source frame; all drawing is on a copy.
     """
     display = frame.copy()
 
@@ -552,13 +563,28 @@ def _render_preview(frame, session, overlay, frame_count, cv2):
         )
 
     mode = session.response_engine.mode.name
-    intent = getattr(getattr(state, "intent", None), "name", "IDLE")
-    hud = f"mode={mode}  finger={'YES' if state.detected else 'no'}  intent={intent}  frame={frame_count}"
+    color = _MODE_COLORS.get(mode, (120, 120, 120))
+    width = display.shape[1]
+
+    # Colored mode banner across the top.
+    cv2.rectangle(display, (0, 0), (width, 44), color, -1)
     cv2.putText(
-        display, hud, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3, cv2.LINE_AA
+        display, f"MODE: {mode}", (12, 32),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 0), 4, cv2.LINE_AA,
     )
     cv2.putText(
-        display, hud, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 100), 1, cv2.LINE_AA
+        display, f"MODE: {mode}", (12, 32),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2, cv2.LINE_AA,
+    )
+
+    # Secondary HUD line below the banner.
+    intent = getattr(getattr(state, "intent", None), "name", "IDLE")
+    hud = f"finger={'YES' if state.detected else 'no'}  intent={intent}  frame={frame_count}"
+    cv2.putText(
+        display, hud, (12, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3, cv2.LINE_AA
+    )
+    cv2.putText(
+        display, hud, (12, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 100), 1, cv2.LINE_AA
     )
     return display
 

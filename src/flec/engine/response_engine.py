@@ -52,6 +52,7 @@ _ENCOURAGE_THROTTLE_SECONDS: float = 5.0
 class _TTSProtocol(Protocol):
     def speak(self, response: AudioResponse) -> None: ...
     def stop_current(self) -> None: ...
+    def clear_pending(self) -> None: ...
 
 
 class _QueueTTS:
@@ -68,6 +69,10 @@ class _QueueTTS:
         self._q.put(response)
 
     def stop_current(self) -> None:
+        pass
+
+    def clear_pending(self) -> None:
+        # No-op: tests inspect the queue directly, so it is never auto-drained.
         pass
 
 
@@ -152,6 +157,10 @@ class ResponseEngine:
         previous = self._mode
         self._mode = mode
         self._last_spoken.clear()
+        # Drop queued narration from the previous mode so the mask stops talking
+        # about things that are no longer relevant once the mode changes.
+        if mode != previous:
+            self._tts.clear_pending()
         if mode == Mode.STORY and self._story_context is None:
             self._story_context = StoryContext()
         elif previous == Mode.STORY and mode != Mode.STORY:
