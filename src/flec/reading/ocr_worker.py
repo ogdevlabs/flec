@@ -1,18 +1,22 @@
-"""OCRWorker — settle-gated, background Reading-mode OCR (F-001).
+"""OCRWorker — pure helper functions for settle-gated Reading-mode OCR (F-001).
 
-Runs OCR on the fingertip crop only when the finger has *settled* (decision D1),
-resolves the mirror/normal orientation by confidence delta (decision D2/D3), and
-feeds the recognized word to ``FingerTracker.update_ocr`` so ``ResponseEngine``
-narrates it. Falls back to the illustration describer when there is no confident
-word. Runs off the 30 fps loop so perception/preview never stalls.
+These module-level functions are called from ``FlecSession.process_frame`` when the
+finger is settled (``should_run_ocr``), and compose into the OCR pipeline:
 
-Queue-only contract: this is session-level orchestration using the *public*
-interfaces of OCRReader / IllustrationDescriber / FingerTracker — the capability
-modules still never import one another. Heavy deps are lazy; every path degrades
-gracefully (log + no-op) and nothing is persisted.
+    should_run_ocr  →  crop_around_fingertip  →  resolve_orientation
+                                                        ↓
+                                             OCRReader.read_region (x2)
+                                                        ↓
+                                         FingerTracker.update_ocr([word])
 
-This module is built incrementally across the F-001 tasks. Pure, thread-free
-helpers live at module scope so they are unit-testable without a camera or models.
+Design decisions:
+- D1: Settle gate — OCR fires only when velocity ≤ settle_threshold (avoids noise).
+- D2/D3: Orientation — both normal and mirror crops are probed; the higher-confidence
+  reading wins, unless the delta is too small to be sure (silence instead of gibberish).
+- D4: Cropped OCR — only the fingertip region is processed (ARM64 perf budget).
+
+Queue-only contract: all functions are pure (no imports of other capability modules).
+``FlecSession`` owns the wiring and calls these from the main frame thread.
 """
 
 from __future__ import annotations

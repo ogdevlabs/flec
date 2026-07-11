@@ -89,7 +89,47 @@ The **preview banner color** tells you the active mode at a glance:
 
 ---
 
-## 4. Launch with the iPhone (Continuity Camera)
+## 4. Reading mode — point to read words
+
+Switch to Reading mode by saying **"reading"** or **"read"**. Then hold a book or
+printed page in front of the camera and rest your index fingertip steadily under
+a word.
+
+**How it works:**
+- Flec tracks your fingertip with MediaPipe and waits until it slows to a halt
+  (settle gate — configurable, see §5).
+- Once settled, it crops the region around the fingertip and runs EasyOCR.
+- The crop is probed in both the camera's natural orientation and mirrored; the
+  reading with higher confidence wins. If neither is confident enough, Flec stays
+  silent (no gibberish).
+- A confident word is spoken once. Move to a new word and the old narration is
+  dropped immediately.
+- If no word is found but there is a picture, the IllustrationDescriber (BLIP-2)
+  describes the region instead, where the model is available.
+
+**Quick test on the integrated webcam:**
+
+```bash
+.venv/bin/python -m flec.main --mode dev --preview
+# Say "reading" to activate, then point at any printed text on screen
+```
+
+> The integrated webcam is mirrored by default on macOS. Flec auto-detects the
+> mirror orientation by comparing confidence scores, so printed text works as-is.
+
+**Troubleshooting Reading mode:**
+
+| Symptom | Cause / Fix |
+|---|---|
+| Words not read / silent | Say "reading" first; check `FLEC_READING_VELOCITY_THRESHOLD` — lower = stricter settle required |
+| Wrong word / gibberish | Raise `FLEC_OCR_CONF_GATE` (default 0.4) to require higher confidence before speaking |
+| Stale word spoken after moving finger | Lower `FLEC_OCR_SETTLE_THRESHOLD` so the settle gate resets faster |
+| "reading_ocr_unavailable" in logs | Run `python scripts/download_models.py` — EasyOCR model missing |
+| Illustration never described | BLIP-2 unavailable on macOS MPS (expected); silent fallback is by design |
+
+---
+
+## 5. Launch with the iPhone (Continuity Camera)
 
 **Enable Continuity Camera first:**
 
@@ -114,7 +154,7 @@ Probes device indices 1–5 for a Continuity Camera; if none is found, logs
 
 ---
 
-## 5. All options
+## 6. All options
 
 | Flag / Env | Values | Default | Purpose |
 |---|---|---|---|
@@ -130,6 +170,11 @@ Probes device indices 1–5 for a Continuity Camera; if none is found, logs
 | `FLEC_CAMERA_INDEX` | integer | — | Env override; **highest** precedence for device index |
 | `FLEC_YOLO_MODEL` | path | `.models/yolov8n.pt` | Use a larger/custom trained YOLO model |
 | `FLEC_TARGET_FPS` | number | `30` | Frame-processing rate cap |
+| `FLEC_READING_VELOCITY_THRESHOLD` | float | `0.08` | Max fingertip velocity (normalised/frame) to enter READING intent |
+| `FLEC_READING_FRAMES` | int | `3` | Consecutive low-velocity frames required before intent becomes READING |
+| `FLEC_OCR_SETTLE_THRESHOLD` | float | `0.02` | Max velocity to run OCR (settle gate — stricter than READING intent) |
+| `FLEC_OCR_CONF_GATE` | float | `0.4` | Minimum OCR confidence to speak a word (lower = more permissive but noisier) |
+| `FLEC_READING_WEAR_OVERRIDE` | `0`/`1` | `1` in dev | Treat integrated webcam as ON_HEAD so Reading activates without a wear sensor |
 
 **Device-index precedence:** `FLEC_CAMERA_INDEX` → `--camera-index` → `--camera` preset.
 
@@ -139,7 +184,7 @@ Probes device indices 1–5 for a Continuity Camera; if none is found, logs
 
 ---
 
-## 6. Verify it's working
+## 7. Verify it's working
 
 Watch the JSON logs for these events:
 
@@ -164,7 +209,7 @@ Watch the JSON logs for these events:
 
 ---
 
-## 7. Validate without a camera
+## 8. Validate without a camera
 
 ```bash
 .venv/bin/python -m flec.main --dry-run
