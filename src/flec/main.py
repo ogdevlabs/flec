@@ -125,6 +125,16 @@ class FlecSession:
         self._shape_detector = ShapeColorDetector(enable_contour_shapes=shapes)
         self._stabilizer = _DetectionStabilizer()
 
+        # Reading-mode capability modules (F-001). Construction is cheap — the
+        # heavy EasyOCR / BLIP-2 models load lazily on first use and degrade
+        # gracefully when unavailable. The settle-gated OCR worker (wired in a
+        # later task) drives these on the fingertip crop.
+        from flec.reading.ocr_reader import OCRReader
+        from flec.reading.illustration_describer import IllustrationDescriber
+
+        self._ocr_reader = OCRReader()
+        self._illustration_describer = IllustrationDescriber()
+
         # Real audio output (Coqui VITS → say → log, per backend availability).
         self._tts_engine = TTSEngine(backend=tts_backend)
         self._response_engine = ResponseEngine(tts=self._tts_engine)
