@@ -147,6 +147,17 @@ class FlecSession:
         # Boot into Exploration so the mask narrates objects it sees right away.
         self._response_engine.set_mode(FlecMode.EXPLORATION)
 
+        # Dev wear override (R10): the integrated webcam has no wear sensor, so
+        # wear-state would stay OFF_HEAD and gate Reading off. Treat the mask as
+        # worn in dev (env-overridable) so Reading activates.
+        from flec.models import WearState as _WearState
+
+        wear_override = os.environ.get(
+            "FLEC_READING_WEAR_OVERRIDE", "1" if mode == "dev" else "0"
+        )
+        if wear_override.lower() not in ("0", "false", "no"):
+            self._response_engine.set_wear_state(_WearState.ON_HEAD)
+
         # Microphone front-end (optional). Only started if voice is requested
         # and a Whisper model + mic device are actually available.
         self._mic: Optional[object] = None
