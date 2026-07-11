@@ -41,6 +41,7 @@ class DetectionType(Enum):
 
     SHAPE = auto()
     COLOR = auto()
+    OBJECT = auto()         # Real-world object recognised by YOLO (e.g. "cup", "dog")
     WEAR = auto()           # Wear state transition
     FINGER = auto()         # Finger tracking update
     TEXT = auto()           # OCR text found
@@ -68,6 +69,10 @@ class CommandIntent(Enum):
     CANCEL_CHALLENGE = auto()   # "stop" / "cancel"
     REPEAT_CHALLENGE = auto()   # "say it again" / "repeat"
     SHUTDOWN = auto()           # "Hey Flec, off"
+    SWITCH_EXPLORATION = auto() # "exploration" / "explore" / "look around"
+    SWITCH_READING = auto()     # "reading" / "read"
+    SWITCH_STORY = auto()       # "story" / "story time"
+    SWITCH_CHALLENGE = auto()   # bare "challenge" / "game" (no target yet)
 
 
 class ChallengeTargetType(Enum):
@@ -75,6 +80,7 @@ class ChallengeTargetType(Enum):
 
     COLOR = auto()
     SHAPE = auto()
+    OBJECT = auto()   # A real-world object recognised by YOLO (e.g. "cup", "ball")
 
 
 class ChallengeStatus(Enum):

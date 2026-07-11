@@ -52,6 +52,7 @@ _ENCOURAGE_THROTTLE_SECONDS: float = 5.0
 class _TTSProtocol(Protocol):
     def speak(self, response: AudioResponse) -> None: ...
     def stop_current(self) -> None: ...
+    def clear_pending(self) -> None: ...
 
 
 class _QueueTTS:
@@ -68,6 +69,10 @@ class _QueueTTS:
         self._q.put(response)
 
     def stop_current(self) -> None:
+        pass
+
+    def clear_pending(self) -> None:
+        # No-op: tests inspect the queue directly, so it is never auto-drained.
         pass
 
 
@@ -152,6 +157,10 @@ class ResponseEngine:
         previous = self._mode
         self._mode = mode
         self._last_spoken.clear()
+        # Drop queued narration from the previous mode so the mask stops talking
+        # about things that are no longer relevant once the mode changes.
+        if mode != previous:
+            self._tts.clear_pending()
         if mode == Mode.STORY and self._story_context is None:
             self._story_context = StoryContext()
         elif previous == Mode.STORY and mode != Mode.STORY:
@@ -216,7 +225,7 @@ class ResponseEngine:
         etype = event.type
         if etype == DetectionType.VOICE_CMD:
             self._handle_voice_cmd(event)
-        elif etype in (DetectionType.SHAPE, DetectionType.COLOR):
+        elif etype in (DetectionType.SHAPE, DetectionType.COLOR, DetectionType.OBJECT):
             self._handle_perception(event)
         elif etype == DetectionType.WEAR:
             self._handle_wear(event)
@@ -249,6 +258,23 @@ class ResponseEngine:
             self._shutdown_flow()
         elif intent == CommandIntent.REPEAT_CHALLENGE:
             self._repeat_challenge_flow()
+        elif intent == CommandIntent.SWITCH_EXPLORATION:
+            self._switch_mode_flow(Mode.EXPLORATION)
+        elif intent == CommandIntent.SWITCH_READING:
+            self._switch_mode_flow(Mode.READING)
+        elif intent == CommandIntent.SWITCH_STORY:
+            self._switch_mode_flow(Mode.STORY)
+        elif intent == CommandIntent.SWITCH_CHALLENGE:
+            self._switch_mode_flow(Mode.CHALLENGE)
+
+    def _switch_mode_flow(self, mode: Mode) -> None:
+        """Enter ``mode`` on a spoken mode-switch command and confirm audibly."""
+        from flec.audio.responses import mode_switch_confirmation
+        self.set_mode(mode)
+        self._tts.speak(AudioResponse(
+            text=mode_switch_confirmation(mode),
+            priority=AudioPriority.HIGH,
+        ))
 
     def _start_challenge_flow(self, cmd) -> None:
         from flec.audio.responses import challenge_acknowledgment
@@ -475,7 +501,22 @@ class ResponseEngine:
     # ------------------------------------------------------------------
 
     def _is_match(self, event: DetectionEvent, challenge: Challenge) -> bool:
-        return event.label.lower() == challenge.target_label.lower()
+        target = challenge.target_label.lower().strip()
+        label = event.label.lower().strip()
+
+        # Color challenges: satisfied by a COLOR detection of that color, or by
+        # any OBJECT whose dominant color matches (so "find something red" works
+        # in the live YOLO-only pipeline, where a red cup counts).
+        if challenge.target_type == ChallengeTargetType.COLOR:
+            if event.type == DetectionType.COLOR:
+                return label == target
+            if event.type == DetectionType.OBJECT:
+                obj_color = (event.metadata or {}).get("color")
+                return bool(obj_color) and obj_color.lower() == target
+            return False
+
+        # Shape / object challenges: match the label, tolerating singular/plural.
+        return label == target or label == target + "s" or target == label + "s"
 
     def _should_encourage(self, now: float) -> bool:
         return (now - self._last_encourage_at) >= _ENCOURAGE_THROTTLE_SECONDS

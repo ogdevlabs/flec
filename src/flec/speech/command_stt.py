@@ -47,6 +47,21 @@ _FIND_PATTERN: re.Pattern = re.compile(
     re.IGNORECASE,
 )
 
+# Spoken mode-switch commands: caregiver says the mode name to change modes
+# on the fly ("exploration", "reading", "story", "challenge"). Checked after
+# find/cancel/shutdown so "stop the challenge" and "find a red" keep their
+# more-specific intents.
+_MODE_PATTERNS: tuple[tuple[re.Pattern, CommandIntent], ...] = (
+    (re.compile(r"\b(?:explore|exploration|explorer|look\s+around)\b", re.IGNORECASE),
+     CommandIntent.SWITCH_EXPLORATION),
+    (re.compile(r"\b(?:reading|read)\b", re.IGNORECASE),
+     CommandIntent.SWITCH_READING),
+    (re.compile(r"\b(?:story|storytime|story\s+time|book)\b", re.IGNORECASE),
+     CommandIntent.SWITCH_STORY),
+    (re.compile(r"\b(?:challenge|game|play)\b", re.IGNORECASE),
+     CommandIntent.SWITCH_CHALLENGE),
+)
+
 
 # ---------------------------------------------------------------------------
 # CommandSTT
@@ -177,24 +192,30 @@ class CommandSTT:
                     raw_text=text,
                 )
 
-        # 4. Unknown
+        # 4. Mode switch — caregiver says a mode name to change modes on the fly
+        for pattern, mode_intent in _MODE_PATTERNS:
+            if pattern.search(stripped):
+                return VoiceCommand(intent=mode_intent, raw_text=text)
+
+        # 5. Unknown
         return VoiceCommand(intent=CommandIntent.UNKNOWN, raw_text=text)
 
     def _resolve_target(
         self, word: str
     ) -> tuple[Optional[str], Optional[ChallengeTargetType]]:
-        """Classify a candidate word as COLOR, SHAPE, or unknown.
+        """Classify a candidate "find X" word as COLOR, SHAPE, or OBJECT.
 
-        Returns:
-            (label, target_type) where label is lowercase canonical form,
-            or (None, None) if the word is unrecognised.
+        Colors and shapes match the fixed spec vocabularies; anything else is
+        treated as a real-world OBJECT target (matched against YOLO detections
+        by the ResponseEngine). Returns (label, target_type); label is the
+        lowercase canonical form.
         """
         word_lower = word.lower()
         if word_lower in _COLOR_KEYWORDS:
             return word_lower, ChallengeTargetType.COLOR
         if word_lower in _SHAPE_KEYWORDS:
             return word_lower, ChallengeTargetType.SHAPE
-        return None, None
+        return word_lower, ChallengeTargetType.OBJECT
 
     def _run_whisper(self, audio_segment: bytes) -> str:
         """Execute Whisper transcription. Called only when model is loaded."""
