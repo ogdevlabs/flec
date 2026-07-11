@@ -237,6 +237,9 @@ class FlecSession:
                 )
                 if text and conf >= self._ocr_conf_gate:
                     self._ocr_cached_orient = orient
+                    # Flush pending audio when the pointed word changes (AC-4).
+                    if state.nearest_text and state.nearest_text != text:
+                        self._tts_engine.clear_pending()
                     self._finger_tracker.update_ocr(text_regions=[text])
                     state = self._finger_tracker.current_state
                 else:
