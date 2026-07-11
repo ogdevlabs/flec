@@ -157,6 +157,54 @@ class OCRReader:
 
         return " ".join(fragments)
 
+    def _run_ocr_detailed(self, frame: np.ndarray) -> tuple[str, float]:
+        """Run EasyOCR and return (joined_text, mean_confidence) over accepted detections."""
+        reader = self._get_reader()
+        if reader is None:
+            return "", 0.0
+
+        results = reader.readtext(frame, detail=1, paragraph=False)  # type: ignore[union-attr]
+        if not results:
+            return "", 0.0
+
+        def _sort_key(item: tuple) -> tuple[float, float]:
+            bbox = item[0]
+            return (min(pt[1] for pt in bbox), min(pt[0] for pt in bbox))
+
+        results.sort(key=_sort_key)
+        fragments: list[str] = []
+        confidences: list[float] = []
+        for _bbox, text, confidence in results:
+            if confidence >= 0.3:
+                fragments.append(text)
+                confidences.append(float(confidence))
+
+        if not fragments:
+            return "", 0.0
+        return " ".join(fragments), sum(confidences) / len(confidences)
+
+    def read_region(self, frame: np.ndarray) -> tuple[str, float]:
+        """OCR a (typically cropped) region and return ``(text, mean_confidence)``.
+
+        Used by the Reading-mode OCR worker: it needs the confidence, not just the
+        text, to gate narration (silence when unsure) and to decide orientation by
+        the normal-vs-mirror confidence delta. Returns ``("", 0.0)`` when nothing
+        readable is found. Never raises.
+        """
+        if _is_degenerate_frame(frame):
+            return "", 0.0
+        try:
+            future = self._executor.submit(self._run_ocr_detailed, frame)
+            text, confidence = future.result(timeout=_OCR_TIMEOUT_SECS)
+        except FuturesTimeoutError:
+            logger.warning(json.dumps({"event": "ocr_timeout", "module": "OCRReader"}))
+            return "", 0.0
+        except Exception as exc:  # noqa: BLE001
+            logger.error(json.dumps({"event": "ocr_error", "module": "OCRReader", "error": str(exc)}))
+            return "", 0.0
+
+        return _normalize_whitespace(_strip_garbage(text)), confidence
+
     def read_page(self, frame: np.ndarray) -> str:
         """Extract and return all readable text from *frame*.
 
