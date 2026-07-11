@@ -132,13 +132,23 @@ class FlecSession:
 
         # Reading-mode capability modules (F-001). Construction is cheap — the
         # heavy EasyOCR / BLIP-2 models load lazily on first use and degrade
-        # gracefully when unavailable. The settle-gated OCR worker (wired in a
-        # later task) drives these on the fingertip crop.
+        # gracefully when unavailable.
         from flec.reading.ocr_reader import OCRReader
         from flec.reading.illustration_describer import IllustrationDescriber
+        from flec.reading.ocr_worker import OnceWarner
 
         self._ocr_reader = OCRReader()
         self._illustration_describer = IllustrationDescriber()
+        self._ocr_once_warner = OnceWarner()
+
+        # Tunable OCR gate (env-overridable for field adjustment).
+        self._ocr_settle_threshold: float = float(
+            os.environ.get("FLEC_OCR_SETTLE_THRESHOLD", "0.02")
+        )
+        self._ocr_conf_gate: float = float(
+            os.environ.get("FLEC_OCR_CONF_GATE", "0.4")
+        )
+        self._ocr_cached_orient: Optional[str] = None
 
         # Real audio output (Coqui VITS → say → log, per backend availability).
         self._tts_engine = TTSEngine(backend=tts_backend)
@@ -214,6 +224,21 @@ class FlecSession:
         if ocr_result is not None:
             self._finger_tracker.update_ocr(text_regions=ocr_result)
             state = self._finger_tracker.current_state
+        else:
+            from flec.reading.ocr_worker import should_run_ocr, crop_around_fingertip, resolve_orientation
+
+            if should_run_ocr(state.detected, state.velocity, self._ocr_settle_threshold):
+                crop = crop_around_fingertip(frame, state.position_x, state.position_y)
+                text, conf, orient = resolve_orientation(
+                    crop,
+                    self._ocr_reader.read_region,
+                    cached=self._ocr_cached_orient,
+                    conf_gate=self._ocr_conf_gate,
+                )
+                if text and conf >= self._ocr_conf_gate:
+                    self._ocr_cached_orient = orient
+                    self._finger_tracker.update_ocr(text_regions=[text])
+                    state = self._finger_tracker.current_state
 
         if state.detected or state.intent.name != "IDLE":
             event = DetectionEvent(
