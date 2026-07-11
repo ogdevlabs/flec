@@ -292,3 +292,89 @@ def test_process_frame_illustration_not_called_when_ocr_succeeds(monkeypatch):
         assert describe_calls == []
     finally:
         session.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# flec-jjb: Word-change flush — new word clears pending audio
+# ---------------------------------------------------------------------------
+
+
+def test_process_frame_flushes_pending_audio_when_word_changes(monkeypatch):
+    """When OCR detects a word change, pending TTS narration is cleared (AC-4)."""
+    session = FlecSession(mode="dev", tts_backend="off", voice=False)
+    try:
+        # Simulate finger in READING with "dog" as current nearest_text
+        state = _FakeFingerState(detected=True, velocity=0.001, intent_name="READING")
+        state.nearest_text = "dog"
+        monkeypatch.setattr(session._finger_tracker, "update", lambda frame: state)
+
+        # OCR now finds "cat" — a different word
+        monkeypatch.setattr(
+            session._ocr_reader, "read_region",
+            lambda frame: ("cat", 0.9),
+        )
+
+        flush_calls = []
+        monkeypatch.setattr(
+            session._tts_engine, "clear_pending",
+            lambda: flush_calls.append(1),
+        )
+
+        session.process_frame(_blank_frame())
+
+        assert len(flush_calls) == 1
+    finally:
+        session.shutdown()
+
+
+def test_process_frame_does_not_flush_when_same_word(monkeypatch):
+    """When OCR finds the same word as current nearest_text, no flush occurs."""
+    session = FlecSession(mode="dev", tts_backend="off", voice=False)
+    try:
+        state = _FakeFingerState(detected=True, velocity=0.001, intent_name="READING")
+        state.nearest_text = "cat"
+        monkeypatch.setattr(session._finger_tracker, "update", lambda frame: state)
+
+        monkeypatch.setattr(
+            session._ocr_reader, "read_region",
+            lambda frame: ("cat", 0.9),
+        )
+
+        flush_calls = []
+        monkeypatch.setattr(
+            session._tts_engine, "clear_pending",
+            lambda: flush_calls.append(1),
+        )
+
+        session.process_frame(_blank_frame())
+
+        assert flush_calls == []
+    finally:
+        session.shutdown()
+
+
+def test_process_frame_does_not_flush_when_no_previous_word(monkeypatch):
+    """When nearest_text is None (first read), no flush occurs."""
+    session = FlecSession(mode="dev", tts_backend="off", voice=False)
+    try:
+        # nearest_text is None (default) — first recognition
+        monkeypatch.setattr(
+            session._finger_tracker, "update",
+            lambda frame: _FakeFingerState(detected=True, velocity=0.001, intent_name="READING"),
+        )
+        monkeypatch.setattr(
+            session._ocr_reader, "read_region",
+            lambda frame: ("hello", 0.85),
+        )
+
+        flush_calls = []
+        monkeypatch.setattr(
+            session._tts_engine, "clear_pending",
+            lambda: flush_calls.append(1),
+        )
+
+        session.process_frame(_blank_frame())
+
+        assert flush_calls == []
+    finally:
+        session.shutdown()
