@@ -1,0 +1,12 @@
+{
+  "meetingType": "party-review",
+  "feature": "reading-mode-end-to-end",
+  "taskId": "—",
+  "timestamp": "2026-07-11T17:00:00Z",
+  "phase": "Construction",
+  "subPhase": "Review",
+  "lastCheckpoint": "Construction / Build / all 10 tasks complete",
+  "resumeCommand": "/build",
+  "progress": "round-1-complete",
+  "momFile": "docs/pdlc/reviews/REVIEW_reading-mode-end-to-end_2026-07-11.md"
+}

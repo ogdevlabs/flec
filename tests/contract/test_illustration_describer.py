@@ -14,6 +14,7 @@ The interface/structural tests always run.
 from __future__ import annotations
 
 import importlib.util
+import os
 
 import numpy as np
 import pytest
@@ -21,14 +22,19 @@ import pytest
 # Import the module under test — will fail (ImportError) until T049
 from flec.reading.illustration_describer import IllustrationDescriber
 
-# Mark for tests that require transformers + torch (BLIP-2 model)
-blip2_available = (
+# Mark for tests that require transformers + torch AND the downloaded model files.
+# Libraries alone are not sufficient — the .models/blip2 directory must exist locally
+# (populated by scripts/download_models.py). CI runners never have the model files.
+_libs_present = (
     importlib.util.find_spec("transformers") is not None
     and importlib.util.find_spec("torch") is not None
 )
+_model_dir = os.environ.get("FLEC_BLIP2_MODEL", ".models/blip2")
+_model_present = os.path.isdir(_model_dir)
+blip2_available = _libs_present and _model_present
 requires_blip2 = pytest.mark.skipif(
     not blip2_available,
-    reason="transformers/torch not installed — BLIP-2 model-dependent tests skipped",
+    reason="BLIP-2 model files not present — run scripts/download_models.py to enable",
 )
 
 # Technical jargon / model class labels that must NOT appear in output

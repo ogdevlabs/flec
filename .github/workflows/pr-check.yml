@@ -1,0 +1,84 @@
+name: PR Check
+
+on:
+  pull_request:
+    branches: ["phase/1-setup", "main"]
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # Fast gate: runs first, blocks the slower matrix if it fails
+  quick-check:
+    name: Quick check (unit + secrets)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends espeak-ng libgl1 libglib2.0-0
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip "setuptools<81"
+          pip install --no-build-isolation openai-whisper
+          pip install -r requirements.txt
+          pip install -e .
+
+      - name: Unit tests (not slow)
+        run: pytest tests/unit/ -m "not slow" -q --tb=short
+
+      - name: Secret scan on PR diff
+        run: |
+          git diff --name-only origin/${{ github.base_ref }}..HEAD | \
+            xargs grep -lE 'AKIA[0-9A-Z]{16}|ghp_[0-9A-Za-z]{36}|sk_live_[0-9A-Za-z]{24}' \
+            2>/dev/null && { echo "::error::Potential secrets in PR diff"; exit 1; } || true
+
+  # Full gates run after quick-check passes
+  full-test:
+    name: Full test suite
+    runs-on: ubuntu-latest
+    needs: quick-check
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends espeak-ng libgl1 libglib2.0-0
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip "setuptools<81"
+          pip install --no-build-isolation openai-whisper
+          pip install -r requirements.txt
+          pip install -e .
+
+      - name: Contract tests
+        run: pytest tests/contract/ -q --tb=short
+
+      - name: Integration tests
+        run: pytest tests/integration/ -q --tb=short
+
+      - name: Full test summary
+        if: always()
+        run: pytest --tb=line -q 2>&1 | tail -5

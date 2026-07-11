@@ -19,6 +19,35 @@
 
 ---
 
+## v0.1.0 — 2026-07-11
+
+### Added
+- **Reading mode end-to-end (F-001):** pointing a steady fingertip at a word causes Flec
+  to speak it aloud — full pipeline from fingertip detection through OCR to audio output.
+- Settle gate (`should_run_ocr`): OCR fires only when finger velocity drops below
+  `FLEC_OCR_SETTLE_THRESHOLD` (default 0.02), keeping fast sweeps silent.
+- Fingertip crop (`crop_around_fingertip`): only the region around the fingertip is sent
+  to EasyOCR, staying within the ARM64 inference budget.
+- Auto-orientation resolution (`resolve_orientation`): both native and mirrored crops are
+  probed; the higher-confidence reading wins. Orientation cached per session for
+  single-probe efficiency on subsequent frames.
+- Confidence silence gate (`FLEC_OCR_CONF_GATE`, default 0.4): words below the gate are
+  never spoken — silence over gibberish.
+- Illustration fallback: when no confident word is found, `IllustrationDescriber` (BLIP-2)
+  describes the region; silent no-op when the model is unavailable (e.g. macOS MPS).
+- Word-change flush: pending TTS narration is cleared the instant the pointed word changes
+  so a previous word is never spoken after the finger has moved on.
+- Dev wear-state override (`FLEC_READING_WEAR_OVERRIDE`, default `1` in dev): treats the
+  integrated webcam as `ON_HEAD` so Reading mode activates without a physical wear sensor.
+- `OnceWarner` helper for one-time structured dev signals (logs each event at most once).
+- `docs/RUNNING.md` §4 "Reading mode — point to read words": how-it-works explanation,
+  quick-test command, and troubleshooting table.
+- Five new env vars: `FLEC_READING_VELOCITY_THRESHOLD`, `FLEC_READING_FRAMES`,
+  `FLEC_OCR_SETTLE_THRESHOLD`, `FLEC_OCR_CONF_GATE`, `FLEC_READING_WEAR_OVERRIDE`.
+- 54 new tests: unit (31), integration (4 E2E pipeline tests), bringing total to 253.
+
+---
+
 ## Pre-PDLC baseline — 2026-07-07 to 2026-07-08
 
 ### Added
