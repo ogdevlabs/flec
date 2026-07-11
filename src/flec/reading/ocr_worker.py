@@ -17,9 +17,31 @@ helpers live at module scope so they are unit-testable without a camera or model
 
 from __future__ import annotations
 
+import json
+import logging
 from typing import Callable, Optional
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
+
+
+class OnceWarner:
+    """Emit a structured warning at most once (dev signal without log spam).
+
+    Used so Reading mode logs a single clear message when OCR is unavailable
+    (edge #9) rather than silently doing nothing every frame.
+    """
+
+    def __init__(self) -> None:
+        self._warned = False
+
+    def warn_once(self, event: str, **fields) -> bool:
+        if self._warned:
+            return False
+        self._warned = True
+        logger.warning(json.dumps({"event": event, **fields}))
+        return True
 
 #: ROI side length as a fraction of the frame, centered on the fingertip.
 _DEFAULT_CROP_FRAC = 0.35

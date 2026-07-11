@@ -205,3 +205,33 @@ def test_mirror_x_reflects_coordinate():
 
     assert mirror_x(0.2) == pytest.approx(0.8)
     assert mirror_x(0.5) == pytest.approx(0.5)
+
+
+# --------------------------------------------------------------------------
+# Graceful OCR-unavailable + one-time dev signal  [flec-m66]
+# --------------------------------------------------------------------------
+
+
+def test_read_region_silent_when_reader_unavailable(monkeypatch):
+    from flec.reading.ocr_reader import OCRReader
+
+    reader = OCRReader()
+    monkeypatch.setattr(reader, "_get_reader", lambda: None)
+    assert reader.read_region(_frame()) == ("", 0.0)
+
+
+def test_ocr_reader_exposes_load_error():
+    from flec.reading.ocr_reader import OCRReader
+
+    reader = OCRReader()
+    assert reader.load_error is None
+    reader._load_error = "no model"
+    assert reader.load_error == "no model"
+
+
+def test_once_warner_logs_only_once():
+    from flec.reading.ocr_worker import OnceWarner
+
+    w = OnceWarner()
+    assert w.warn_once("reading_ocr_unavailable", reason="missing") is True
+    assert w.warn_once("reading_ocr_unavailable", reason="missing") is False
