@@ -82,6 +82,11 @@ class OCRReader:
         self._load_error: Optional[str] = None
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ocr")
 
+    @property
+    def load_error(self) -> Optional[str]:
+        """The EasyOCR load error, if the model failed to load; else None."""
+        return self._load_error
+
     def _get_reader(self) -> Optional[object]:
         """Lazy-load and return the EasyOCR reader, or None if unavailable."""
         if self._load_error is not None:
