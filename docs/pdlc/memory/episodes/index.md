@@ -9,4 +9,4 @@
 
 | # | Feature | Date Shipped | Episode File | PR | Status |
 |---|---------|-------------|--------------|-----|--------|
-| — | — | — | — | — | — |
+| 001 | reading-mode-end-to-end | 2026-07-11 | [001_reading-mode-end-to-end_2026-07-11.md](001_reading-mode-end-to-end_2026-07-11.md) | _(pending merge)_ | Draft |

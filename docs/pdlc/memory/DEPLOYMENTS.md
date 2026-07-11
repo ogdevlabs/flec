@@ -11,7 +11,7 @@
      values live in your secret store (Vault, AWS Secrets Manager, etc.). -->
 
 **Project:** Flec
-**Last updated:** 2026-07-08
+**Last updated:** 2026-07-11
 
 ---
 
@@ -68,7 +68,7 @@
 
 | Date | Version | Deployed by | Episode | Notes |
 |------|---------|-------------|---------|-------|
-<!-- none yet -->
+| 2026-07-11 | v0.1.0 | Pulse | 001 | Merge-only — no hardware available yet; deploy/flash deferred |
 
 #### Notes
 
@@ -94,4 +94,4 @@ not deploying to a hosted environment. Pulse formalizes this at the first `/ship
 
 | Date | Change | Author |
 |------|--------|--------|
-<!-- none yet -->
+| 2026-07-11 | v0.1.0 merged to phase/1-setup and tagged; device deploy/flash deferred (no hardware) | Pulse |
