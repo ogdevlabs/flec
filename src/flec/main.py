@@ -119,7 +119,12 @@ class FlecSession:
         self._voice_cmd_queue: queue.Queue = queue.Queue(maxsize=50)
 
         # Perception modules.
-        self._finger_tracker = FingerTracker()
+        # Realistic reading-intent tuning for the live camera: a deliberate hold
+        # reads (READING); a fast sweep stays silent (SCANNING). Env-overridable.
+        self._finger_tracker = FingerTracker(
+            velocity_threshold=float(os.environ.get("FLEC_READING_VELOCITY_THRESHOLD", "0.08")),
+            reading_frames=int(os.environ.get("FLEC_READING_FRAMES", "3")),
+        )
         # YOLO is the source of truth for objects; contour/HSV shape heuristics
         # are opt-in (--shapes) for the geometric-shape learning mode.
         self._shape_detector = ShapeColorDetector(enable_contour_shapes=shapes)

@@ -67,8 +67,17 @@ class FingerTracker:
         velocity_threshold: float (property)
     """
 
-    def __init__(self, velocity_threshold: float = _DEFAULT_VELOCITY_THRESHOLD) -> None:
+    def __init__(
+        self,
+        velocity_threshold: float = _DEFAULT_VELOCITY_THRESHOLD,
+        reading_frames: int = _READING_FRAMES,
+    ) -> None:
         self._threshold = velocity_threshold
+        #: Consecutive low-velocity frames required for SCANNING → READING.
+        #: Instance-configurable so the live session can use realistic values
+        #: (a deliberate hold reads; a fast sweep stays silent) without changing
+        #: the contract-test defaults.
+        self._reading_frames = reading_frames
 
         # Rolling window of raw per-frame velocities (normalised coords/frame).
         self._velocity_window: deque[float] = deque(maxlen=_VELOCITY_WINDOW)
@@ -144,7 +153,7 @@ class FingerTracker:
 
         # Velocity is at or below threshold — increment streak.
         self._low_velocity_streak += 1
-        if self._low_velocity_streak >= _READING_FRAMES:
+        if self._low_velocity_streak >= self._reading_frames:
             return ReadingIntent.READING
 
         # Not yet enough consecutive slow frames — remain SCANNING (or stay READING).
