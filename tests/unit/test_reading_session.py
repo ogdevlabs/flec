@@ -186,3 +186,109 @@ def test_process_frame_legacy_ocr_result_param_still_works(monkeypatch):
         assert ["hello"] in ocr_calls
     finally:
         session.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# flec-7dh: Illustration fallback — no confident word → describe the region
+# ---------------------------------------------------------------------------
+
+
+def test_process_frame_uses_illustration_fallback_when_no_confident_word(monkeypatch):
+    """Settled finger + no confident OCR word → IllustrationDescriber.describe fires."""
+    session = FlecSession(mode="dev", tts_backend="off", voice=False)
+    try:
+        monkeypatch.setattr(
+            session._finger_tracker, "update",
+            lambda frame: _FakeFingerState(detected=True, velocity=0.001, intent_name="READING"),
+        )
+        # OCR returns nothing confident
+        monkeypatch.setattr(
+            session._ocr_reader, "read_region",
+            lambda frame: ("", 0.0),
+        )
+
+        describe_calls = []
+        monkeypatch.setattr(
+            session._illustration_describer, "describe",
+            lambda frame: describe_calls.append(1) or "a red duck",
+        )
+
+        session.process_frame(_blank_frame())
+
+        assert len(describe_calls) == 1
+    finally:
+        session.shutdown()
+
+
+def test_process_frame_illustration_description_reaches_response_engine(monkeypatch):
+    """Illustration description is set as pending on the response engine."""
+    session = FlecSession(mode="dev", tts_backend="off", voice=False)
+    try:
+        monkeypatch.setattr(
+            session._finger_tracker, "update",
+            lambda frame: _FakeFingerState(detected=True, velocity=0.001, intent_name="READING"),
+        )
+        monkeypatch.setattr(
+            session._ocr_reader, "read_region",
+            lambda frame: ("", 0.0),
+        )
+        monkeypatch.setattr(
+            session._illustration_describer, "describe",
+            lambda frame: "a blue cat",
+        )
+
+        session.process_frame(_blank_frame())
+
+        assert session._response_engine._pending_illustration == "a blue cat"
+    finally:
+        session.shutdown()
+
+
+def test_process_frame_no_illustration_when_describer_unavailable(monkeypatch):
+    """When IllustrationDescriber returns empty, response engine gets nothing."""
+    session = FlecSession(mode="dev", tts_backend="off", voice=False)
+    try:
+        monkeypatch.setattr(
+            session._finger_tracker, "update",
+            lambda frame: _FakeFingerState(detected=True, velocity=0.001, intent_name="READING"),
+        )
+        monkeypatch.setattr(
+            session._ocr_reader, "read_region",
+            lambda frame: ("", 0.0),
+        )
+        monkeypatch.setattr(
+            session._illustration_describer, "describe",
+            lambda frame: "",  # unavailable
+        )
+
+        session.process_frame(_blank_frame())
+
+        assert session._response_engine._pending_illustration is None
+    finally:
+        session.shutdown()
+
+
+def test_process_frame_illustration_not_called_when_ocr_succeeds(monkeypatch):
+    """When OCR finds a confident word, IllustrationDescriber is not called."""
+    session = FlecSession(mode="dev", tts_backend="off", voice=False)
+    try:
+        monkeypatch.setattr(
+            session._finger_tracker, "update",
+            lambda frame: _FakeFingerState(detected=True, velocity=0.001, intent_name="READING"),
+        )
+        monkeypatch.setattr(
+            session._ocr_reader, "read_region",
+            lambda frame: ("cat", 0.9),
+        )
+
+        describe_calls = []
+        monkeypatch.setattr(
+            session._illustration_describer, "describe",
+            lambda frame: describe_calls.append(1) or "some picture",
+        )
+
+        session.process_frame(_blank_frame())
+
+        assert describe_calls == []
+    finally:
+        session.shutdown()

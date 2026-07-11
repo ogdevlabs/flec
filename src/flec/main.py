@@ -239,6 +239,11 @@ class FlecSession:
                     self._ocr_cached_orient = orient
                     self._finger_tracker.update_ocr(text_regions=[text])
                     state = self._finger_tracker.current_state
+                else:
+                    # No confident word — attempt illustration description (AC-3).
+                    description = self._illustration_describer.describe(crop)
+                    if description:
+                        self._response_engine.set_pending_illustration(description)
 
         if state.detected or state.intent.name != "IDLE":
             event = DetectionEvent(
@@ -248,7 +253,7 @@ class FlecSession:
                 metadata={
                     "intent": state.intent,
                     "nearest_text": state.nearest_text,
-                    "is_illustration": False,
+                    "is_illustration": bool(self._response_engine._pending_illustration),
                     "position_x": state.position_x,
                     "position_y": state.position_y,
                     "velocity": state.velocity,
