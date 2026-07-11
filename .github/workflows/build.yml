@@ -19,6 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 3.12 excluded: Coqui TTS has no 3.12 build (see CLAUDE.md)
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
