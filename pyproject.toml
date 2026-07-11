@@ -17,3 +17,6 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v"
+markers = [
+    "slow: marks tests as slow-running benchmarks (deselect with '-m not slow')",
+]

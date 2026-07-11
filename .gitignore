@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+
+# pytest
+.pytest_cache/
+.hypothesis/
+
+# Models (downloaded separately)
+.models/
+
+# Logs
+*.log
+
+# mypy / ruff / type checkers
+.mypy_cache/
+.ruff_cache/
+
+# Environment
+.env
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
