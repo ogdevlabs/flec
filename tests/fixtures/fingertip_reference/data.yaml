@@ -1,6 +1,7 @@
 # Fingertip reference dataset for yolo26n-pose fine-tune (flec-atl)
-# Source: HaGRID "point" gesture class — CC BY 4.0
-# https://github.com/hukenovs/hagrid
+# Source: HaGRID "one" gesture class (index finger extended) — CC BY 4.0
+# Dataset: https://huggingface.co/datasets/cj-mills/hagrid-sample-30k-384p
+# Original: https://github.com/hukenovs/hagrid
 #
 # Run scripts/download_fingertip_fixtures.py to populate images/ and labels/
 # This file is tracked in git; images/ is gitignored (too large).

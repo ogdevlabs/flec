@@ -50,11 +50,16 @@ IMG_DIR = FIXTURE_DIR / "images"
 LBL_DIR = FIXTURE_DIR / "labels"
 
 TARGET_COUNT = 60
-GESTURE_CLASS = "point"
+# "one" = index finger extended upward — best proxy for fingertip pointing in
+# the cj-mills/hagrid-sample-30k-384p dataset (no "point" class in this split).
+GESTURE_CLASS = "one"
 
-# HaGRID sample dataset on HuggingFace (hagrid-sample-30k-384p, CC BY 4.0)
+# HaGRID sample dataset on HuggingFace (CC BY 4.0)
 HF_DATASET_ID = "cj-mills/hagrid-sample-30k-384p"
-HF_SUBFOLDER = f"hagrid_dataset_sample/{GESTURE_CLASS}"
+# Zip-internal paths
+HF_ZIP_FILENAME = "hagrid-sample-30k-384p.zip"
+HF_ZIP_IMG_PREFIX = f"hagrid-sample-30k-384p/hagrid_30k/train_val_{GESTURE_CLASS}/"
+HF_ZIP_ANN_PATH = f"hagrid-sample-30k-384p/ann_train_val/{GESTURE_CLASS}.json"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -123,92 +128,85 @@ def _label_from_hagrid_annotation(
 
 
 def _download_via_hf_hub(n: int = TARGET_COUNT) -> int:
-    """
-    Download up to *n* images using the huggingface_hub library.
-    Returns the number of images actually downloaded.
+    """Download up to *n* images from the HaGRID zip on HuggingFace Hub.
+
+    The cj-mills/hagrid-sample-30k-384p dataset ships as a single zip.
+    We download it once (HF Hub caches it), then extract the gesture class
+    images and annotations directly from the zip without unpacking everything.
     """
     try:
-        import huggingface_hub as hf  # lazy import
+        import huggingface_hub as hf
     except ImportError:
         print("  huggingface_hub not installed. pip install huggingface_hub")
         return 0
 
     token = os.environ.get("HUGGING_FACE_HUB_TOKEN") or os.environ.get("HF_TOKEN")
-    api = hf.HfApi()
+    hf_kwargs = {"token": token} if token else {}
 
-    print(f"  Listing files in {HF_DATASET_ID}/{HF_SUBFOLDER} …")
+    print(f"  Downloading {HF_DATASET_ID}/{HF_ZIP_FILENAME} (cached after first run)…")
     try:
-        files = list(
-            api.list_repo_files(
-                repo_id=HF_DATASET_ID,
-                repo_type="dataset",
-                token=token,
-            )
+        local_zip = hf.hf_hub_download(
+            repo_id=HF_DATASET_ID,
+            filename=HF_ZIP_FILENAME,
+            repo_type="dataset",
+            **hf_kwargs,
         )
     except Exception as exc:
-        print(f"  HF listing failed: {exc}")
+        print(f"  HF download failed: {exc}")
         return 0
 
-    # Filter to images in the point subfolder
-    point_files = [
-        f for f in files
-        if f.startswith(HF_SUBFOLDER) and f.lower().endswith((".jpg", ".jpeg", ".png"))
-    ]
+    import zipfile
 
-    if not point_files:
-        print(f"  No images found under {HF_SUBFOLDER}")
+    print(f"  Extracting {GESTURE_CLASS} images from zip…")
+    try:
+        with zipfile.ZipFile(local_zip) as z:
+            all_entries = z.namelist()
+
+            # Load annotations
+            annotations: dict = {}
+            if HF_ZIP_ANN_PATH in all_entries:
+                with z.open(HF_ZIP_ANN_PATH) as f:
+                    annotations = json.load(f)
+                print(f"  Loaded {len(annotations)} annotations")
+
+            # Find all gesture images
+            img_entries = [
+                e for e in all_entries
+                if e.startswith(HF_ZIP_IMG_PREFIX)
+                and e.lower().endswith((".jpg", ".jpeg", ".png"))
+            ]
+            if not img_entries:
+                print(f"  No images found at {HF_ZIP_IMG_PREFIX}")
+                return 0
+
+            rng = random.Random(42)
+            rng.shuffle(img_entries)
+            selected = img_entries[:n]
+            print(f"  Found {len(img_entries)} images; selecting {len(selected)}")
+
+            downloaded = 0
+            for i, entry in enumerate(selected, 1):
+                stem = pathlib.Path(entry).stem
+                dest = IMG_DIR / pathlib.Path(entry).name
+                if dest.exists():
+                    print(f"  [{i:02d}/{len(selected)}] already exists: {dest.name}")
+                    downloaded += 1
+                    continue
+                try:
+                    data = z.read(entry)
+                    dest.write_bytes(data)
+                    ann = annotations.get(stem, {})
+                    if ann:
+                        _label_from_hagrid_annotation(ann, stem, 384, 384)
+                    else:
+                        _make_placeholder_label(stem)
+                    downloaded += 1
+                    print(f"  [{i:02d}/{len(selected)}] {dest.name}")
+                except Exception as exc:
+                    print(f"  [{i:02d}/{len(selected)}] FAILED {entry}: {exc}")
+    except Exception as exc:
+        print(f"  Zip extraction failed: {exc}")
         return 0
-
-    rng = random.Random(42)
-    rng.shuffle(point_files)
-    selected = point_files[:n]
-
-    # Try to load annotations
-    ann_path = f"hagrid_dataset_sample/ann_test_{GESTURE_CLASS}.json"
-    annotations: dict = {}
-    if ann_path in files:
-        try:
-            local_ann = hf.hf_hub_download(
-                repo_id=HF_DATASET_ID,
-                filename=ann_path,
-                repo_type="dataset",
-                token=token,
-            )
-            with open(local_ann) as fh:
-                annotations = json.load(fh)
-            print(f"  Loaded {len(annotations)} annotations from {ann_path}")
-        except Exception as exc:
-            print(f"  Could not load annotations: {exc}")
-
-    downloaded = 0
-    for i, hf_path in enumerate(selected, 1):
-        stem = pathlib.Path(hf_path).stem
-        dest = IMG_DIR / pathlib.Path(hf_path).name
-        if dest.exists():
-            print(f"  [{i:02d}/{len(selected)}] already exists: {dest.name}")
-            downloaded += 1
-            continue
-        try:
-            local = hf.hf_hub_download(
-                repo_id=HF_DATASET_ID,
-                filename=hf_path,
-                repo_type="dataset",
-                token=token,
-            )
-            import shutil
-
-            shutil.copy2(local, dest)
-            # Label
-            ann = annotations.get(stem, {})
-            if ann:
-                _label_from_hagrid_annotation(ann, stem, 384, 384)
-            else:
-                _make_placeholder_label(stem)
-            downloaded += 1
-            print(f"  [{i:02d}/{len(selected)}] {dest.name}")
-        except Exception as exc:
-            print(f"  [{i:02d}/{len(selected)}] FAILED {hf_path}: {exc}")
-        time.sleep(0.05)  # polite rate-limiting
 
     return downloaded
 
