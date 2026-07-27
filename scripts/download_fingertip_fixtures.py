@@ -33,7 +33,13 @@ import random
 import sys
 import textwrap
 import time
+from pathlib import Path
 from typing import Optional
+
+# Load .env before reading tokens
+sys.path.insert(0, str(Path(__file__).parent))
+from _env import load_dotenv  # noqa: E402
+load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Paths

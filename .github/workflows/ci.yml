@@ -13,6 +13,11 @@ concurrency:
 
 env:
   PYTHON_VERSION: "3.11"
+  # HF token is injected from the HUGGING_FACE_HUB_TOKEN repository secret.
+  # Add it at: Settings → Secrets and variables → Actions → New repository secret
+  # Name: HUGGING_FACE_HUB_TOKEN  Value: hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+  # Without it: HaGRID fixtures fall back to direct/synthetic, BLIP-2 skipped.
+  HUGGING_FACE_HUB_TOKEN: ${{ secrets.HUGGING_FACE_HUB_TOKEN }}
 
 jobs:
   # ── 1. Lint & static analysis (fast, no heavy deps) ───────────────────────

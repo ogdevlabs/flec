@@ -15,6 +15,11 @@ import os
 import sys
 from pathlib import Path
 
+# Load .env before anything else so HUGGING_FACE_HUB_TOKEN is available
+sys.path.insert(0, str(Path(__file__).parent))
+from _env import load_dotenv  # noqa: E402
+load_dotenv()
+
 MODELS_DIR = Path(__file__).parent.parent / ".models"
 
 
@@ -103,31 +108,50 @@ def download_easyocr_latin() -> None:
 
 
 def download_blip2() -> None:
-    """Download BLIP-2 INT8 model via HuggingFace transformers."""
-    dest_dir = MODELS_DIR / "blip2-int8"
+    """Download BLIP-2 INT8 model via HuggingFace transformers.
+
+    Saves to .models/blip2/ — the path that illustration_describer.py expects.
+    Requires HUGGING_FACE_HUB_TOKEN in .env (or environment) for authenticated
+    access; unauthenticated downloads work for public models but may be rate-limited.
+    """
+    dest_dir = MODELS_DIR / "blip2"
     if already_downloaded(dest_dir):
-        print(f"  [SKIP] BLIP-2 INT8 already at {dest_dir}")
+        print(f"  [SKIP] BLIP-2 already at {dest_dir}")
         return
+
+    token = os.environ.get("HUGGING_FACE_HUB_TOKEN") or os.environ.get("HF_TOKEN") or None
+    if not token:
+        print("  [INFO] HUGGING_FACE_HUB_TOKEN not set — attempting unauthenticated download")
+        print("         Set it in .env to avoid rate-limiting on large model files")
+
     print("  [DOWNLOAD] BLIP-2 INT8 (transformers / HuggingFace)...")
     try:
-        from transformers import Blip2Processor, Blip2ForConditionalGeneration
+        from transformers import AutoProcessor, Blip2ForConditionalGeneration
         ensure_dir(dest_dir)
         model_id = "Salesforce/blip2-opt-2.7b-coco"
+        hf_kwargs = {"token": token} if token else {}
+
         print(f"    Downloading processor from {model_id}...")
-        processor = Blip2Processor.from_pretrained(model_id, cache_dir=str(dest_dir))
-        print(f"    Downloading model weights (INT8, may take several minutes)...")
+        processor = AutoProcessor.from_pretrained(
+            model_id,
+            cache_dir=str(dest_dir),
+            **hf_kwargs,
+        )
+        print(f"    Downloading model weights (INT8 quantized, ~4 GB — may take several minutes)...")
         model = Blip2ForConditionalGeneration.from_pretrained(
             model_id,
             load_in_8bit=True,
             device_map="auto",
             cache_dir=str(dest_dir),
+            **hf_kwargs,
         )
-        print(f"  [OK] BLIP-2 INT8 saved to {dest_dir}")
+        print(f"  [OK] BLIP-2 saved to {dest_dir}")
         del processor, model
     except ImportError as e:
         print(f"  [WARN] Required package not installed ({e}) — skipping BLIP-2 download")
+        print("         Install: pip install transformers accelerate bitsandbytes")
     except Exception as e:
-        print(f"  [WARN] BLIP-2 download failed ({e}) — skipping")
+        print(f"  [WARN] BLIP-2 download failed: {e}")
 
 
 # Registry of YOLO26n model variants needed for F-002
