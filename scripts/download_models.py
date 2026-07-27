@@ -108,14 +108,25 @@ def download_easyocr_latin() -> None:
 
 
 def download_blip2() -> None:
-    """Download BLIP-2 INT8 model via HuggingFace transformers.
+    """Download BLIP-2 model via HuggingFace Hub snapshot_download.
 
-    Saves to .models/blip2/ — the path that illustration_describer.py expects.
-    Requires HUGGING_FACE_HUB_TOKEN in .env (or environment) for authenticated
-    access; unauthenticated downloads work for public models but may be rate-limited.
+    Uses snapshot_download with local_dir= so files land flat in .models/blip2/
+    (not in the nested models--Salesforce--blip2-opt-2.7b-coco/snapshots/...
+    cache structure).  illustration_describer.py loads from that flat path with
+    local_files_only=True, which requires the flat layout.
+
+    Set FLEC_SKIP_BLIP2=1 to skip entirely (used in CI where bitsandbytes is
+    unavailable and the 4 GB download is impractical).
     """
+    if os.environ.get("FLEC_SKIP_BLIP2"):
+        print("  [SKIP] BLIP-2 — FLEC_SKIP_BLIP2 is set")
+        return
+
     dest_dir = MODELS_DIR / "blip2"
-    if already_downloaded(dest_dir):
+
+    # Only consider it downloaded if the flat config.json is present at root
+    # (not nested inside a HF cache subdirectory).
+    if (dest_dir / "config.json").exists():
         print(f"  [SKIP] BLIP-2 already at {dest_dir}")
         return
 
@@ -124,32 +135,21 @@ def download_blip2() -> None:
         print("  [INFO] HUGGING_FACE_HUB_TOKEN not set — attempting unauthenticated download")
         print("         Set it in .env to avoid rate-limiting on large model files")
 
-    print("  [DOWNLOAD] BLIP-2 INT8 (transformers / HuggingFace)...")
+    print("  [DOWNLOAD] BLIP-2 (HuggingFace Hub snapshot, ~4 GB — may take several minutes)...")
     try:
-        from transformers import AutoProcessor, Blip2ForConditionalGeneration
+        from huggingface_hub import snapshot_download
         ensure_dir(dest_dir)
         model_id = "Salesforce/blip2-opt-2.7b-coco"
         hf_kwargs = {"token": token} if token else {}
-
-        print(f"    Downloading processor from {model_id}...")
-        processor = AutoProcessor.from_pretrained(
-            model_id,
-            cache_dir=str(dest_dir),
-            **hf_kwargs,
-        )
-        print(f"    Downloading model weights (INT8 quantized, ~4 GB — may take several minutes)...")
-        model = Blip2ForConditionalGeneration.from_pretrained(
-            model_id,
-            load_in_8bit=True,
-            device_map="auto",
-            cache_dir=str(dest_dir),
+        snapshot_download(
+            repo_id=model_id,
+            local_dir=str(dest_dir),
             **hf_kwargs,
         )
         print(f"  [OK] BLIP-2 saved to {dest_dir}")
-        del processor, model
-    except ImportError as e:
-        print(f"  [WARN] Required package not installed ({e}) — skipping BLIP-2 download")
-        print("         Install: pip install transformers accelerate bitsandbytes")
+    except ImportError:
+        print("  [WARN] huggingface_hub not installed — skipping BLIP-2 download")
+        print("         Install: pip install huggingface_hub")
     except Exception as e:
         print(f"  [WARN] BLIP-2 download failed: {e}")
 

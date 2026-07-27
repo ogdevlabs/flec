@@ -14,6 +14,7 @@ The interface/structural tests always run.
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 
 import numpy as np
@@ -22,34 +23,39 @@ import pytest
 # Import the module under test — will fail (ImportError) until T049
 from flec.reading.illustration_describer import IllustrationDescriber
 
-# Mark for tests that require transformers + torch + downloaded BLIP-2 weights
+# Mark for tests that require transformers + torch + downloaded BLIP-2 weights.
+# Also skipped when FLEC_SKIP_BLIP2=1 (set in CI — model is 4 GB, needs GPU).
 _libs_available = (
     importlib.util.find_spec("transformers") is not None
     and importlib.util.find_spec("torch") is not None
 )
-def _blip2_model_ready() -> bool:
-    """Return True only when .models/blip2 contains loadable model weights.
 
-    Requires both config.json AND at least one pytorch_model / model.safetensors
-    shard — a partial HF cache with only metadata files is not sufficient.
+
+def _blip2_model_ready() -> bool:
+    """Return True only when .models/blip2 contains flat, loadable weights.
+
+    Requires config.json at the directory root (not nested in HF cache subdirs)
+    AND at least one weight shard.  snapshot_download(..., local_dir=) writes
+    the flat layout; cache_dir= writes a nested layout that local_files_only=True
+    cannot read from the root path.
     """
-    blip2_dir = Path(".models/blip2")
-    if not blip2_dir.is_dir():
+    if os.environ.get("FLEC_SKIP_BLIP2"):
         return False
-    has_config = any(blip2_dir.rglob("config.json"))
-    has_weights = any(
-        blip2_dir.rglob(pat)
+    blip2_dir = Path(".models/blip2")
+    if not (blip2_dir / "config.json").exists():
+        return False
+    return any(
+        blip2_dir.glob(pat)
         for pat in ("pytorch_model*.bin", "model*.safetensors", "model.bin")
     )
-    return has_config and has_weights
 
-_model_present = _blip2_model_ready()
-blip2_available = _libs_available and _model_present
+
+blip2_available = _libs_available and _blip2_model_ready()
 requires_blip2 = pytest.mark.skipif(
     not blip2_available,
     reason=(
-        "BLIP-2 model weights not present at .models/blip2 — "
-        "run python scripts/download_models.py to enable these tests"
+        "BLIP-2 model not ready — run python scripts/download_models.py, "
+        "or unset FLEC_SKIP_BLIP2 if running locally with weights present"
     ),
 )
 

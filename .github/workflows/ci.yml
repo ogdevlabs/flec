@@ -13,11 +13,13 @@ concurrency:
 
 env:
   PYTHON_VERSION: "3.11"
-  # HF token is injected from the HUGGING_FACE_HUB_TOKEN repository secret.
-  # Add it at: Settings → Secrets and variables → Actions → New repository secret
-  # Name: HUGGING_FACE_HUB_TOKEN  Value: hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-  # Without it: HaGRID fixtures fall back to direct/synthetic, BLIP-2 skipped.
+  # HF token injected from repository secret (Settings → Secrets → Actions).
   HUGGING_FACE_HUB_TOKEN: ${{ secrets.HUGGING_FACE_HUB_TOKEN }}
+  # Skip BLIP-2 download and its contract tests in CI: the model is 4 GB,
+  # requires bitsandbytes (Linux x86_64 GPU), and is not practical on
+  # standard ubuntu-latest runners.  Tests that need it are @requires_blip2
+  # and are skipped when this var is set.
+  FLEC_SKIP_BLIP2: "1"
 
 jobs:
   # ── 1. Lint & static analysis (fast, no heavy deps) ───────────────────────

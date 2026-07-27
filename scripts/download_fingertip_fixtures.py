@@ -53,7 +53,7 @@ TARGET_COUNT = 60
 GESTURE_CLASS = "point"
 
 # HaGRID sample dataset on HuggingFace (hagrid-sample-30k-384p, CC BY 4.0)
-HF_DATASET_ID = "hagrid/hagrid-sample-30k-384p"
+HF_DATASET_ID = "cj-mills/hagrid-sample-30k-384p"
 HF_SUBFOLDER = f"hagrid_dataset_sample/{GESTURE_CLASS}"
 
 # ---------------------------------------------------------------------------
