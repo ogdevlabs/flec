@@ -494,11 +494,13 @@ class ResponseEngine:
 
     def _handle_exploration_detection(self, event: DetectionEvent) -> None:
         from flec.audio.responses import build_exploration_response, exploration_narration
-        dedup_key = (event.type, event.label.lower())
+        # Include color in the dedup key so "red cup" and "blue cup" are each narrated.
+        paired_color: Optional[str] = (event.metadata or {}).get("color")
+        dedup_key = (event.type, event.label.lower(), paired_color)
         if self._is_recently_spoken(dedup_key):
             return
         try:
-            response = build_exploration_response(event)
+            response = build_exploration_response(event, paired_color=paired_color)
         except Exception:
             response = AudioResponse(
                 text=exploration_narration(event.label),
@@ -515,6 +517,7 @@ class ResponseEngine:
         logger.info(json.dumps({
             "event": "response_engine.exploration_narrated",
             "label": event.label,
+            "color": paired_color,
         }))
 
     # ------------------------------------------------------------------
