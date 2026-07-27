@@ -130,56 +130,20 @@ def download_blip2() -> None:
         print(f"  [WARN] BLIP-2 download failed ({e}) — skipping")
 
 
-# Registry of YOLO26n model variants needed for F-002
-# SHA-256 checksums are placeholder values until official weights are released
-YOLO26_MODELS = {
-    "yolo26n": {
-        "path": ".models/yolo26n.pt",
-        "url": "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt",
-        "sha256": "PLACEHOLDER_VERIFY_BEFORE_PRODUCTION",
-        "description": "YOLO26n detection (2.4M params)",
-    },
-    "yolo26n-pose": {
-        "path": ".models/yolo26n-pose.pt",
-        "url": "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n-pose.pt",
-        "sha256": "PLACEHOLDER_VERIFY_BEFORE_PRODUCTION",
-        "description": "YOLO26n pose estimation",
-    },
-    "yolo26n-seg": {
-        "path": ".models/yolo26n-seg.pt",
-        "url": "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n-seg.pt",
-        "sha256": "PLACEHOLDER_VERIFY_BEFORE_PRODUCTION",
-        "description": "YOLO26n instance segmentation",
-    },
-    "yolo26n-obb": {
-        "path": ".models/yolo26n-obb.pt",
-        "url": "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n-obb.pt",
-        "sha256": "PLACEHOLDER_VERIFY_BEFORE_PRODUCTION",
-        "description": "YOLO26n oriented bounding box (document detection)",
-    },
-}
+def verify_checksums(checksums_path: Path) -> None:
+    """Verify model SHA-256 checksums against model_checksums.json.
 
+    Stub implementation — full verification requires minisign Python bindings
+    on ARM64 (not yet available). When implemented, this function should:
+      1. Load the public key from checksums_path["public_key"].
+      2. Verify checksums_path.minisig using minisign -V.
+      3. For each model entry, compute sha256(model_path) and compare.
+      4. Raise RuntimeError on any mismatch.
 
-def download_yolo26_models() -> None:
-    """Download YOLO26n model variants for F-002 multi-task perception."""
-    for name, spec in YOLO26_MODELS.items():
-        dest = Path(spec["path"])
-        if already_downloaded(dest):
-            print(f"  [SKIP] {name} already at {dest}")
-            continue
-        print(f"  [DOWNLOAD] {name} ({spec['description']})...")
-        try:
-            from ultralytics import YOLO
-            ensure_dir(dest.parent)
-            model = YOLO(dest.name)  # triggers ultralytics auto-download
-            src = Path(dest.name)
-            if src.exists():
-                src.rename(dest)
-            print(f"  [OK] {name} saved to {dest}")
-        except ImportError:
-            print(f"  [WARN] ultralytics not installed — skipping {name}")
-        except Exception as e:
-            print(f"  [WARN] {name} download failed: {e}")
+    See docs/KEYS.md for the signing workflow.
+    """
+    # TODO: verify_checksums(MODELS_DIR / "model_checksums.json")
+    pass
 
 
 def main() -> None:
@@ -188,13 +152,15 @@ def main() -> None:
     print("-" * 50)
     ensure_dir(MODELS_DIR)
 
+    # TODO: verify_checksums(MODELS_DIR / "model_checksums.json")
+    # Uncomment once minisign Python bindings are available on ARM64.
+
     steps = [
         ("YOLOv8n", download_yolov8n),
         ("Whisper tiny", download_whisper_tiny),
         ("Coqui VITS", download_coqui_vits),
         ("EasyOCR latin", download_easyocr_latin),
         ("BLIP-2 INT8", download_blip2),
-        ("YOLO26n variants", download_yolo26_models),
     ]
 
     for name, fn in steps:

@@ -41,3 +41,6 @@ env/
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# Model signing key (never commit the private key)
+flec-models.key
