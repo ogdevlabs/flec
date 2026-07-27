@@ -1,13 +1,17 @@
 """Integration tests for finger-guided reading mode (US3).
 
 Tests verify the full pipeline: FingerTracker → DetectionEvent → ResponseEngine → AudioResponse.
-Tests must FAIL before T041 + T043 implementations are in place.
+
+Also covers the FlecSession-level E2E pipeline added in F-001:
+  - process_frame with mocked OCR drives update_ocr → narration
+  - Orientation contract (normal vs mirror, confidence delta gate)
 """
 
 from __future__ import annotations
 
 import queue
 
+import numpy as np
 import pytest
 
 from flec.models import (
@@ -276,3 +280,135 @@ class TestFingerTrackerPipeline:
         assert not audio_queue.empty(), (
             "After tracker reset and re-entry to READING, narration must work"
         )
+
+
+# ---------------------------------------------------------------------------
+# F-001 E2E: FlecSession.process_frame — OCR wired pipeline
+# ---------------------------------------------------------------------------
+
+
+def _blank_frame(h=100, w=200):
+    return np.zeros((h, w, 3), dtype=np.uint8)
+
+
+class _FakeFingerState:
+    def __init__(self, detected=True, velocity=0.001, intent_name="READING", nearest_text=None):
+        self.detected = detected
+        self.velocity = velocity
+        self.intent = ReadingIntent[intent_name]
+        self.nearest_text = nearest_text
+        self.position_x = 0.5
+        self.position_y = 0.5
+
+
+class TestFlecSessionReadingPipeline:
+    """E2E: FlecSession.process_frame drives full reading pipeline via mocked OCR."""
+
+    def test_settled_finger_with_confident_word_wires_update_ocr(self, monkeypatch):
+        """Settled finger + confident OCR word → update_ocr called with the word."""
+        from flec.main import FlecSession
+
+        session = FlecSession(mode="dev", tts_backend="off", voice=False)
+        try:
+            monkeypatch.setattr(
+                session._finger_tracker, "update",
+                lambda frame: _FakeFingerState(detected=True, velocity=0.001, intent_name="READING"),
+            )
+            monkeypatch.setattr(
+                session._ocr_reader, "read_region",
+                lambda frame: ("sun", 0.88),
+            )
+
+            ocr_calls = []
+            original = session._finger_tracker.update_ocr
+
+            def capture(text_regions):
+                ocr_calls.append(text_regions)
+                original(text_regions)
+
+            monkeypatch.setattr(session._finger_tracker, "update_ocr", capture)
+
+            session.process_frame(_blank_frame())
+
+            assert ocr_calls == [["sun"]], (
+                f"Expected update_ocr([\"sun\"]); got: {ocr_calls}"
+            )
+        finally:
+            session.shutdown()
+
+    def test_fast_sweep_produces_no_narration(self, monkeypatch):
+        """Fast finger sweep → no OCR fires → no narration."""
+        from flec.main import FlecSession
+
+        session = FlecSession(mode="dev", tts_backend="off", voice=False)
+        try:
+            monkeypatch.setattr(
+                session._finger_tracker, "update",
+                lambda frame: _FakeFingerState(detected=True, velocity=0.9, intent_name="SCANNING"),
+            )
+
+            read_calls = []
+            monkeypatch.setattr(
+                session._ocr_reader, "read_region",
+                lambda frame: read_calls.append(1) or ("word", 0.95),
+            )
+
+            session.process_frame(_blank_frame())
+
+            assert read_calls == [], "OCR must not run during fast sweep"
+        finally:
+            session.shutdown()
+
+    def test_no_confidence_falls_back_to_illustration(self, monkeypatch):
+        """No confident OCR word → illustration fallback fires."""
+        from flec.main import FlecSession
+
+        session = FlecSession(mode="dev", tts_backend="off", voice=False)
+        try:
+            monkeypatch.setattr(
+                session._finger_tracker, "update",
+                lambda frame: _FakeFingerState(detected=True, velocity=0.001, intent_name="READING"),
+            )
+            monkeypatch.setattr(
+                session._ocr_reader, "read_region",
+                lambda frame: ("", 0.0),
+            )
+
+            describe_calls = []
+            monkeypatch.setattr(
+                session._illustration_describer, "describe",
+                lambda frame: describe_calls.append(1) or "",
+            )
+
+            session.process_frame(_blank_frame())
+
+            assert len(describe_calls) == 1, "IllustrationDescriber must be called as fallback"
+        finally:
+            session.shutdown()
+
+    def test_word_change_clears_pending_audio(self, monkeypatch):
+        """Moving from one word to another clears pending TTS narration."""
+        from flec.main import FlecSession
+
+        session = FlecSession(mode="dev", tts_backend="off", voice=False)
+        try:
+            state = _FakeFingerState(
+                detected=True, velocity=0.001, intent_name="READING", nearest_text="dog"
+            )
+            monkeypatch.setattr(session._finger_tracker, "update", lambda frame: state)
+            monkeypatch.setattr(
+                session._ocr_reader, "read_region",
+                lambda frame: ("cat", 0.9),
+            )
+
+            flush_calls = []
+            monkeypatch.setattr(
+                session._tts_engine, "clear_pending",
+                lambda: flush_calls.append(1),
+            )
+
+            session.process_frame(_blank_frame())
+
+            assert len(flush_calls) == 1, "Pending audio must be flushed on word change"
+        finally:
+            session.shutdown()

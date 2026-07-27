@@ -5,7 +5,7 @@
      Claude reads this file at the start of every session to auto-resume from the last checkpoint.
      If this file is missing or empty, PDLC will prompt you to run /pdlc init. -->
 
-**Last updated:** 2026-07-08T00:00:00Z
+**Last updated:** 2026-07-10T21:15:57Z
 
 ---
 
@@ -71,16 +71,27 @@ agent-teams
 
 ```json
 {
-  "triggered_at": null,
-  "active_task": null,
-  "sub_phase": null,
-  "step": null,
-  "skill_file": null,
-  "work_in_progress": null,
-  "next_action": null,
-  "files_open": []
+  "triggered_at": "2026-07-11T05:40:00Z",
+  "active_task": "reading-mode-end-to-end Construction / Build loop (autonomous through all waves)",
+  "sub_phase": "Build",
+  "step": "Wave 3 of 4",
+  "skill_file": "skills/ndc-ai-build/steps/02-build-loop.md",
+  "work_in_progress": "Waves 1-2 done and committed locally (5 commits, NOT yet pushed). Closed beads: flec-7al, flec-4yx, flec-d23, flec-0ak, flec-m66. Remaining — Wave 3: flec-akf (wire OCRWorker thread: should_run_ocr -> crop_around_fingertip -> resolve_orientation via OCRReader.read_region -> finger_tracker.update_ocr([word]); silence gate; OnceWarner on unavailable), flec-vd5 (illustration fallback when no confident word). Wave 4: flec-3bh (word-change flush), flec-eb3 (integration tests), flec-a7q (docs). Then Review gate + Test gate + Wrap-up.",
+  "next_action": "bd update flec-akf --claim; TDD the OCRWorker thread that composes ocr_worker helpers + OCRReader.read_region and wires into FlecSession.process_frame (replace ocr_result=None path).",
+  "files_open": [
+    "src/flec/reading/ocr_worker.py",
+    "src/flec/reading/ocr_reader.py",
+    "src/flec/main.py",
+    "src/flec/perception/finger_tracker.py",
+    "src/flec/engine/response_engine.py",
+    "docs/pdlc/prds/plans/plan_reading-mode-end-to-end_2026-07-10.md"
+  ]
 }
 ```
+
+### Uncommitted / unpushed notes
+- 5 build commits are local-only on `feature/reading-mode-end-to-end` — **not pushed** (user handling git).
+- Working tree: this STATE.md edit + `.beads/interactions.jsonl` (bd telemetry, do not commit).
 
 ---
 

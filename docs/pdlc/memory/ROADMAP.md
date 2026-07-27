@@ -1,7 +1,7 @@
 # Roadmap
 
 **Project:** Flec
-**Last updated:** 2026-07-08
+**Last updated:** 2026-07-10
 
 ---
 

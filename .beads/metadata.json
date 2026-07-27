@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "flec",
+  "project_id": "3437343b-af0e-4141-a16e-40bb5a9bfc46"
+}
