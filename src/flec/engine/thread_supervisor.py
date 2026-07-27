@@ -18,6 +18,11 @@ class ThreadSupervisor:
         self._stop_event = threading.Event()
         self._monitor_thread: threading.Thread | None = None
 
+    @property
+    def _threads(self) -> list[dict]:
+        """Alias for _entries — used by tests to inspect supervised thread state."""
+        return self._entries
+
     def add_thread(self, thread, factory_fn) -> None:
         """Register a thread for supervision. factory_fn() must return a fresh instance."""
         self._entries.append({

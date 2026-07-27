@@ -424,6 +424,15 @@ class FlecSession:
             )
             self._response_engine.on_event(event)
 
+    def set_mode(self, mode) -> None:
+        """Switch session mode and reset all capability thread tracking state (AC-14)."""
+        from flec.models import Mode as FlecMode
+        self._response_engine.set_mode(mode)
+        for thread in self._capability_threads:
+            thread.reset_tracking()
+        logger.info(json.dumps({"event": "session_mode_changed", "mode": mode.name
+                                if hasattr(mode, "name") else str(mode)}))
+
     def drain_voice_commands(self) -> None:
         """Route any mic-captured VoiceCommands as VOICE_CMD events.
 
