@@ -357,6 +357,8 @@ class FlecSession:
         if self._mic is not None:
             self._mic.stop()  # type: ignore[attr-defined]
         self._tts_engine.shutdown()
+        if hasattr(self, "_ocr_reader"):
+            self._ocr_reader.shutdown()
 
     def reset_reading_state(self) -> None:
         """Reset FingerTracker and OCR orientation cache on mode transitions."""

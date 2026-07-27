@@ -210,6 +210,10 @@ class OCRReader:
 
         return _normalize_whitespace(_strip_garbage(text)), confidence
 
+    def shutdown(self) -> None:
+        """Shut down the background executor. Call once when done with this reader."""
+        self._executor.shutdown(wait=False)
+
     def read_page(self, frame: np.ndarray) -> str:
         """Extract and return all readable text from *frame*.
 
