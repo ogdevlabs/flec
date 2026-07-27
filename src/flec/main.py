@@ -376,7 +376,12 @@ class FlecSession:
         for event in self._stabilizer.filter(self._shape_detector.detect(frame)):
             self._response_engine.on_event(event)
 
-        # 2. Finger tracking (Reading mode).
+        # 2. Finger tracking — only in READING mode.
+        # MediaPipe runs ~13ms/frame; skipping it in Exploration/Challenge
+        # saves ~50% of process_frame cost and avoids spurious FINGER events.
+        if self._response_engine.mode != FlecMode.READING:
+            return
+
         state = self._finger_tracker.update(frame)
 
         if self._response_engine.mode == FlecMode.READING:

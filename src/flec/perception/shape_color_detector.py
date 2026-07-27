@@ -323,16 +323,14 @@ class ShapeColorDetector:
         if self._yolo is not None:
             events.extend(self._detect_yolo(frame, frame_h, frame_w))
 
-        # Step 2: HSV color detection — always runs (no model required).
-        # Gives the child color narration ("I see something red!") even when
-        # YOLO is absent or the object isn't in COCO.
-        events.extend(self._detect_colors(frame, frame_h, frame_w))
-
-        # Step 3 (optional): contour-based geometric shape heuristics.
-        # Off in the live session (prone to phantom shapes in cluttered scenes);
-        # on for the shape-learning mode and contract tests (--shapes flag).
+        # Step 2 (optional): contour/HSV geometric-shape + color heuristics.
+        # Off in the live session (YOLO is source of truth); on for the
+        # shape-learning mode (--shapes) and the detector contract tests.
+        # HSV fires on background walls/floors and causes false narration in
+        # the live session — it must not run when enable_contour_shapes=False.
         if self._enable_contour:
             min_area = frame_h * frame_w * _MIN_SHAPE_AREA_FRACTION
+            events.extend(self._detect_colors(frame, frame_h, frame_w))
             events.extend(self._detect_shapes(frame, frame_h, frame_w, min_area))
 
         # Log all detections
