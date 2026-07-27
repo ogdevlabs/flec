@@ -195,6 +195,12 @@ class FlecSession:
         # Boot into Exploration so the mask narrates objects it sees right away.
         self._response_engine.set_mode(FlecMode.EXPLORATION)
 
+        # Dev mode: treat the webcam as always worn (no physical wear sensor on dev).
+        # Disable with FLEC_READING_WEAR_OVERRIDE=0 for tests that need OFF_HEAD state.
+        if mode == "dev" and os.environ.get("FLEC_READING_WEAR_OVERRIDE", "1") != "0":
+            from flec.models import WearState as _WearState
+            self._response_engine.set_wear_state(_WearState.ON_HEAD)
+
         # Capability threads registered by Wave-2 tasks. process_frame fans out
         # TaggedFrames to each thread's input queue (non-blocking; drop-oldest).
         self._capability_threads: list = []
