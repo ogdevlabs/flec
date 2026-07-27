@@ -21,6 +21,7 @@ from collections import deque
 from typing import Optional
 
 import numpy as np
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +212,14 @@ class FlecSession:
         if voice:
             self._start_mic()
 
+        # Boot integrity: verify model checksums, then pre-warm threads
+        if not self._verify_models():
+            logger.warning(json.dumps({"event": "model_checksum_degraded",
+                                       "fallback": "exploration_mode"}))
+            self._response_engine.set_mode(FlecMode.EXPLORATION)
+        if self._capability_threads:
+            self._warm_models()
+
         logger.info(json.dumps({
             "event": "flec_session_init",
             "run_mode": mode,
@@ -239,6 +248,90 @@ class FlecSession:
             logger.warning(json.dumps({
                 "event": "voice_disabled", "reason": "mic_unavailable",
             }))
+
+    def _verify_models(self) -> bool:
+        """Verify SHA-256 checksums for all registered YOLO26 models (T-008).
+
+        Returns True if all present models pass; False if any fail.
+        Missing files and PLACEHOLDER checksums are skipped (graceful degradation).
+        """
+        import hashlib
+        import importlib.util
+
+        _scripts_path = Path(__file__).parent.parent.parent / "scripts" / "download_models.py"
+        spec = importlib.util.spec_from_file_location("_download_models", _scripts_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        yolo26_models = mod.YOLO26_MODELS
+
+        all_ok = True
+        for name, spec_entry in yolo26_models.items():
+            model_path = Path(spec_entry["path"])
+            expected_sha = spec_entry.get("sha256", "")
+            if not model_path.exists():
+                continue
+            if expected_sha.startswith("PLACEHOLDER"):
+                logger.info(json.dumps({"event": "model_checksum_skipped", "model": name,
+                                        "reason": "placeholder_sha256"}))
+                continue
+            h = hashlib.sha256()
+            with open(model_path, "rb") as f:
+                for chunk in iter(lambda: f.read(65536), b""):
+                    h.update(chunk)
+            actual = h.hexdigest()
+            if actual != expected_sha:
+                logger.warning(json.dumps({"event": "model_checksum_failed", "model": name,
+                                           "expected": expected_sha[:16], "actual": actual[:16]}))
+                all_ok = False
+            else:
+                logger.info(json.dumps({"event": "model_loaded", "model": name,
+                                        "sha256": actual[:16]}))
+        return all_ok
+
+    def _warm_models(self) -> None:
+        """Pre-warm capability threads sequentially with a synthetic blank frame.
+
+        Logs model_warmed per thread and boot_complete with peak_ram_pct.
+        Warns if peak RAM exceeds 80%.
+        """
+        import resource
+
+        from flec.models import TaggedFrame, Mode as FlecMode
+        blank = np.zeros((64, 64, 3), dtype=np.uint8)
+        for thread in list(self._capability_threads):
+            if not thread.is_alive():
+                continue
+            t0 = time.monotonic()
+            thread_name = type(thread).__name__
+            try:
+                tagged = TaggedFrame(frame=blank, origin_mode=FlecMode.EXPLORATION,
+                                     timestamp_ns=time.monotonic_ns())
+                thread._input_queue.put(tagged, timeout=1.0)
+                try:
+                    thread._output_queue.get(timeout=3.0)
+                except queue.Empty:
+                    pass
+            except Exception as exc:
+                logger.warning(json.dumps({"event": "warm_thread_error", "thread": thread_name,
+                                           "error": str(exc)}))
+            duration_ms = int((time.monotonic() - t0) * 1000)
+            logger.info(json.dumps({"event": "model_warmed", "model": thread_name,
+                                    "duration_ms": duration_ms}))
+
+        peak_ram_pct = 0.0
+        try:
+            usage = resource.getrusage(resource.RUSAGE_SELF)
+            ram_bytes = usage.ru_maxrss * 1024 if sys.platform == "darwin" else usage.ru_maxrss
+            total_ram = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+            peak_ram_pct = round(ram_bytes / total_ram * 100, 1) if total_ram > 0 else 0.0
+        except Exception:
+            pass
+
+        msg = {"event": "boot_complete", "peak_ram_pct": peak_ram_pct}
+        if peak_ram_pct > 80:
+            logger.warning(json.dumps({**msg, "warn": "peak_ram_exceeds_80pct"}))
+        else:
+            logger.info(json.dumps(msg))
 
     def process_frame(self, frame: np.ndarray, ocr_result: Optional[list[str]] = None) -> None:
         """Process a single camera frame through the perception pipeline.

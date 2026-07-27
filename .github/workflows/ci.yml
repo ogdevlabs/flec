@@ -66,6 +66,9 @@ jobs:
       - name: Run integration tests
         run: pytest tests/integration/ -q --tb=short
 
+      - name: Thread safety audit
+        run: python scripts/audit_thread_safety.py
+
   secret-scan:
     name: Secret scan
     runs-on: ubuntu-latest
