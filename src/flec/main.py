@@ -316,7 +316,7 @@ class FlecSession:
                 metadata={
                     "intent": state.intent,
                     "nearest_text": state.nearest_text,
-                    "is_illustration": bool(self._response_engine._pending_illustration),
+                    "is_illustration": self._response_engine.has_pending_illustration,
                     "position_x": state.position_x,
                     "position_y": state.position_y,
                     "velocity": state.velocity,

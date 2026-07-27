@@ -270,6 +270,10 @@ class ResponseEngine:
         """Inject a pending illustration description for the next READING event."""
         self._pending_illustration = description
 
+    @property
+    def has_pending_illustration(self) -> bool:
+        return self._pending_illustration is not None
+
     # ------------------------------------------------------------------
     # Multi-thread reader API
     # ------------------------------------------------------------------
