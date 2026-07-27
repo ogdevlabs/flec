@@ -307,6 +307,12 @@ class FlecSession:
                     description = self._illustration_describer.describe(crop)
                     if description:
                         self._response_engine.set_pending_illustration(description)
+                    # Emit a one-time warning when OCR failed to load (edge #9).
+                    if self._ocr_reader._load_error is not None:
+                        self._ocr_once_warner.warn_once(
+                            "reading_ocr_unavailable",
+                            reason=str(self._ocr_reader._load_error),
+                        )
 
         if state.detected or state.intent.name != "IDLE":
             event = DetectionEvent(
