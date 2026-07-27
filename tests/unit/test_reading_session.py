@@ -55,8 +55,10 @@ class _FakeFingerState:
 
 def test_process_frame_calls_update_ocr_with_confident_word(monkeypatch):
     """Given finger settled + confident OCR word → update_ocr is called with [word]."""
+    from flec.models import Mode
     session = FlecSession(mode="dev", tts_backend="off", voice=False)
     try:
+        session._response_engine.set_mode(Mode.READING)
         # Simulate a settled finger
         monkeypatch.setattr(
             session._finger_tracker, "update",
@@ -164,8 +166,10 @@ def test_process_frame_does_not_call_update_ocr_when_no_finger(monkeypatch):
 
 def test_process_frame_legacy_ocr_result_param_still_works(monkeypatch):
     """Passing ocr_result explicitly still calls update_ocr (backward compat)."""
+    from flec.models import Mode
     session = FlecSession(mode="dev", tts_backend="off", voice=False)
     try:
+        session._response_engine.set_mode(Mode.READING)
         monkeypatch.setattr(
             session._finger_tracker, "update",
             lambda frame: _FakeFingerState(detected=True, velocity=0.001, intent_name="READING"),
@@ -195,8 +199,10 @@ def test_process_frame_legacy_ocr_result_param_still_works(monkeypatch):
 
 def test_process_frame_uses_illustration_fallback_when_no_confident_word(monkeypatch):
     """Settled finger + no confident OCR word → IllustrationDescriber.describe fires."""
+    from flec.models import Mode
     session = FlecSession(mode="dev", tts_backend="off", voice=False)
     try:
+        session._response_engine.set_mode(Mode.READING)
         monkeypatch.setattr(
             session._finger_tracker, "update",
             lambda frame: _FakeFingerState(detected=True, velocity=0.001, intent_name="READING"),
@@ -221,12 +227,20 @@ def test_process_frame_uses_illustration_fallback_when_no_confident_word(monkeyp
 
 
 def test_process_frame_illustration_description_reaches_response_engine(monkeypatch):
-    """Illustration description is set as pending on the response engine."""
+    """Illustration description is set as pending on the response engine.
+
+    Uses SCANNING intent so the FINGER event does not immediately consume the
+    pending illustration (that consumption happens in _handle_finger when
+    intent==READING and is_illustration==True). This test verifies the OCR →
+    set_pending_illustration wiring, not the TTS narration path.
+    """
+    from flec.models import Mode
     session = FlecSession(mode="dev", tts_backend="off", voice=False)
     try:
+        session._response_engine.set_mode(Mode.READING)
         monkeypatch.setattr(
             session._finger_tracker, "update",
-            lambda frame: _FakeFingerState(detected=True, velocity=0.001, intent_name="READING"),
+            lambda frame: _FakeFingerState(detected=True, velocity=0.001, intent_name="SCANNING"),
         )
         monkeypatch.setattr(
             session._ocr_reader, "read_region",
@@ -301,8 +315,10 @@ def test_process_frame_illustration_not_called_when_ocr_succeeds(monkeypatch):
 
 def test_process_frame_flushes_pending_audio_when_word_changes(monkeypatch):
     """When OCR detects a word change, pending TTS narration is cleared (AC-4)."""
+    from flec.models import Mode
     session = FlecSession(mode="dev", tts_backend="off", voice=False)
     try:
+        session._response_engine.set_mode(Mode.READING)
         # Simulate finger in READING with "dog" as current nearest_text
         state = _FakeFingerState(detected=True, velocity=0.001, intent_name="READING")
         state.nearest_text = "dog"

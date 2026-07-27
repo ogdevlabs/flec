@@ -250,7 +250,7 @@ class FlecSession:
         Also fans out a TaggedFrame to each registered CapabilityThread
         (non-blocking; drops oldest on full queue — AC-10).
         """
-        from flec.models import DetectionEvent, DetectionType, TaggedFrame
+        from flec.models import DetectionEvent, DetectionType, TaggedFrame, Mode as FlecMode
 
         # Fan out to registered capability threads (non-blocking, drop oldest on full).
         if self._capability_threads:
@@ -281,38 +281,39 @@ class FlecSession:
         # 2. Finger tracking (Reading mode).
         state = self._finger_tracker.update(frame)
 
-        if ocr_result is not None:
-            self._finger_tracker.update_ocr(text_regions=ocr_result)
-            state = self._finger_tracker.current_state
-        else:
-            from flec.reading.ocr_worker import should_run_ocr, crop_around_fingertip, resolve_orientation
+        if self._response_engine.mode == FlecMode.READING:
+            if ocr_result is not None:
+                self._finger_tracker.update_ocr(text_regions=ocr_result)
+                state = self._finger_tracker.current_state
+            else:
+                from flec.reading.ocr_worker import should_run_ocr, crop_around_fingertip, resolve_orientation
 
-            if should_run_ocr(state.detected, state.velocity, self._ocr_settle_threshold):
-                crop = crop_around_fingertip(frame, state.position_x, state.position_y)
-                text, conf, orient = resolve_orientation(
-                    crop,
-                    self._ocr_reader.read_region,
-                    cached=self._ocr_cached_orient,
-                    conf_gate=self._ocr_conf_gate,
-                )
-                if text and conf >= self._ocr_conf_gate:
-                    self._ocr_cached_orient = orient
-                    # Flush pending audio when the pointed word changes (AC-4).
-                    if state.nearest_text and state.nearest_text != text:
-                        self._tts_engine.clear_pending()
-                    self._finger_tracker.update_ocr(text_regions=[text])
-                    state = self._finger_tracker.current_state
-                else:
-                    # No confident word — attempt illustration description (AC-3).
-                    description = self._illustration_describer.describe(crop)
-                    if description:
-                        self._response_engine.set_pending_illustration(description)
-                    # Emit a one-time warning when OCR failed to load (edge #9).
-                    if self._ocr_reader._load_error is not None:
-                        self._ocr_once_warner.warn_once(
-                            "reading_ocr_unavailable",
-                            reason=str(self._ocr_reader._load_error),
-                        )
+                if should_run_ocr(state.detected, state.velocity, self._ocr_settle_threshold):
+                    crop = crop_around_fingertip(frame, state.position_x, state.position_y)
+                    text, conf, orient = resolve_orientation(
+                        crop,
+                        self._ocr_reader.read_region,
+                        cached=self._ocr_cached_orient,
+                        conf_gate=self._ocr_conf_gate,
+                    )
+                    if text and conf >= self._ocr_conf_gate:
+                        self._ocr_cached_orient = orient
+                        # Flush pending audio when the pointed word changes (AC-4).
+                        if state.nearest_text and state.nearest_text != text:
+                            self._tts_engine.clear_pending()
+                        self._finger_tracker.update_ocr(text_regions=[text])
+                        state = self._finger_tracker.current_state
+                    else:
+                        # No confident word — attempt illustration description (AC-3).
+                        description = self._illustration_describer.describe(crop)
+                        if description:
+                            self._response_engine.set_pending_illustration(description)
+                        # Emit a one-time warning when OCR failed to load (edge #9).
+                        if self._ocr_reader._load_error is not None:
+                            self._ocr_once_warner.warn_once(
+                                "reading_ocr_unavailable",
+                                reason=str(self._ocr_reader._load_error),
+                            )
 
         if state.detected or state.intent.name != "IDLE":
             event = DetectionEvent(
