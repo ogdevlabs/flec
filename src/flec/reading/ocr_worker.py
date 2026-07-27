@@ -90,6 +90,21 @@ def crop_around_fingertip(
     return frame[y0:y1, x0:x1]
 
 
+def rotate_crop(crop: np.ndarray, angle_deg: float) -> np.ndarray:
+    """Rotate crop by angle_deg counter-clockwise for OBB-corrected OCR."""
+    if abs(angle_deg) < 1.0:
+        return crop
+    try:
+        import cv2
+        h, w = crop.shape[:2]
+        center = (w // 2, h // 2)
+        M = cv2.getRotationMatrix2D(center, angle_deg, 1.0)
+        return cv2.warpAffine(crop, M, (w, h), flags=cv2.INTER_LINEAR,
+                              borderMode=cv2.BORDER_REPLICATE)
+    except Exception:
+        return crop
+
+
 def resolve_orientation(
     crop: np.ndarray,
     read_region: Callable[[np.ndarray], "tuple[str, float]"],
@@ -97,6 +112,7 @@ def resolve_orientation(
     cached: Optional[str] = None,
     conf_gate: float = 0.4,
     delta_gate: float = 0.1,
+    obb_angle: Optional[float] = None,
 ) -> "tuple[str, float, str]":
     """Resolve mirror/normal orientation for a fingertip crop (decisions D2/D3).
 
@@ -109,6 +125,12 @@ def resolve_orientation(
     (unless both orientations agree on the text, in which case orientation is moot).
     When ``cached`` names a known orientation, only that one is probed (single OCR).
     """
+    # Pre-rotate crop if OBB angle is known — eliminates the mirror probe in most cases.
+    if obb_angle is not None and abs(obb_angle) > 1.0:
+        crop = rotate_crop(crop, obb_angle)
+        if cached is None:
+            cached = "normal"
+
     # Cache fast-path — probe only the known orientation.
     if cached == "normal":
         text, conf = read_region(crop)
