@@ -307,8 +307,10 @@ class TestFlecSessionReadingPipeline:
     def test_settled_finger_with_confident_word_wires_update_ocr(self, monkeypatch):
         """Settled finger + confident OCR word → update_ocr called with the word."""
         from flec.main import FlecSession
+        from flec.models import Mode
 
         session = FlecSession(mode="dev", tts_backend="off", voice=False)
+        session.set_mode(Mode.READING)
         try:
             monkeypatch.setattr(
                 session._finger_tracker, "update",
@@ -339,8 +341,10 @@ class TestFlecSessionReadingPipeline:
     def test_fast_sweep_produces_no_narration(self, monkeypatch):
         """Fast finger sweep → no OCR fires → no narration."""
         from flec.main import FlecSession
+        from flec.models import Mode
 
         session = FlecSession(mode="dev", tts_backend="off", voice=False)
+        session.set_mode(Mode.READING)
         try:
             monkeypatch.setattr(
                 session._finger_tracker, "update",
@@ -362,8 +366,10 @@ class TestFlecSessionReadingPipeline:
     def test_no_confidence_falls_back_to_illustration(self, monkeypatch):
         """No confident OCR word → illustration fallback fires."""
         from flec.main import FlecSession
+        from flec.models import Mode
 
         session = FlecSession(mode="dev", tts_backend="off", voice=False)
+        session.set_mode(Mode.READING)
         try:
             monkeypatch.setattr(
                 session._finger_tracker, "update",
@@ -389,8 +395,10 @@ class TestFlecSessionReadingPipeline:
     def test_word_change_clears_pending_audio(self, monkeypatch):
         """Moving from one word to another clears pending TTS narration."""
         from flec.main import FlecSession
+        from flec.models import Mode
 
         session = FlecSession(mode="dev", tts_backend="off", voice=False)
+        session.set_mode(Mode.READING)
         try:
             state = _FakeFingerState(
                 detected=True, velocity=0.001, intent_name="READING", nearest_text="dog"
