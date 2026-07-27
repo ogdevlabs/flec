@@ -114,12 +114,12 @@ def resolve_orientation(
         text, conf = read_region(crop)
         if conf >= conf_gate:
             return text, conf, "normal"
-        return "", conf, ""   # FIX(flec-7xu): early return on confidence miss
+        return "", conf, ""   # confidence miss: skip dual-probe, stay silent
     elif cached == "mirror":
         text, conf = read_region(crop[:, ::-1])
         if conf >= conf_gate:
             return text, conf, "mirror"
-        return "", conf, ""   # FIX(flec-7xu): early return on confidence miss
+        return "", conf, ""   # confidence miss: skip dual-probe, stay silent
 
     n_text, n_conf = read_region(crop)
     m_text, m_conf = read_region(crop[:, ::-1])
