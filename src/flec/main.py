@@ -359,8 +359,9 @@ class FlecSession:
         self._tts_engine.shutdown()
 
     def reset_reading_state(self) -> None:
-        """Reset FingerTracker on mode transitions."""
+        """Reset FingerTracker and OCR orientation cache on mode transitions."""
         self._finger_tracker.reset()
+        self._ocr_cached_orient = None
         logger.info(json.dumps({"event": "reading_state_reset"}))
 
     @property

@@ -378,3 +378,19 @@ def test_process_frame_does_not_flush_when_no_previous_word(monkeypatch):
         assert flush_calls == []
     finally:
         session.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# flec-p7t: reset_reading_state clears _ocr_cached_orient
+# ---------------------------------------------------------------------------
+
+
+def test_reset_reading_state_clears_ocr_cache(monkeypatch):
+    monkeypatch.setenv("FLEC_READING_WEAR_OVERRIDE", "0")
+    session = FlecSession(mode="dev", tts_backend="off", voice=False)
+    try:
+        session._ocr_cached_orient = "normal"
+        session.reset_reading_state()
+        assert session._ocr_cached_orient is None
+    finally:
+        session.shutdown()
