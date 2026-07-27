@@ -60,6 +60,49 @@ class _DetectionStabilizer:
 
 
 # ---------------------------------------------------------------------------
+# CapabilityThread base class
+# ---------------------------------------------------------------------------
+
+
+class CapabilityThread(threading.Thread):
+    """Base class for queue-isolated perception threads.
+
+    Subclasses implement _process_tagged_frame() which reads TaggedFrames from
+    self._input_queue and writes DetectionEvents to self._output_queue.
+    """
+
+    def __init__(self, input_queue_maxsize: int = 5) -> None:
+        super().__init__(daemon=True)
+        self._input_queue: queue.Queue = queue.Queue(maxsize=input_queue_maxsize)
+        self._output_queue: queue.Queue = queue.Queue()
+        self._stop_event: threading.Event = threading.Event()
+
+    def get_output_queue(self) -> queue.Queue:
+        return self._output_queue
+
+    def reset_tracking(self) -> None:
+        while not self._input_queue.empty():
+            try:
+                self._input_queue.get_nowait()
+            except queue.Empty:
+                break
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def run(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                tagged_frame = self._input_queue.get(timeout=0.05)
+                self._process_tagged_frame(tagged_frame)
+            except queue.Empty:
+                continue
+
+    def _process_tagged_frame(self, tagged_frame) -> None:
+        pass  # Subclasses override this
+
+
+# ---------------------------------------------------------------------------
 # Session loop
 # ---------------------------------------------------------------------------
 
@@ -132,6 +175,10 @@ class FlecSession:
         # Boot into Exploration so the mask narrates objects it sees right away.
         self._response_engine.set_mode(FlecMode.EXPLORATION)
 
+        # Capability threads registered by Wave-2 tasks. process_frame fans out
+        # TaggedFrames to each thread's input queue (non-blocking; drop-oldest).
+        self._capability_threads: list = []
+
         # Microphone front-end (optional). Only started if voice is requested
         # and a Whisper model + mic device are actually available.
         self._mic: Optional[object] = None
@@ -173,8 +220,31 @@ class FlecSession:
         Runs object detection (shapes/colors) and finger tracking, routing each
         resulting DetectionEvent through the ResponseEngine. Called per-frame by
         the camera capture loop (or tests).
+
+        Also fans out a TaggedFrame to each registered CapabilityThread
+        (non-blocking; drops oldest on full queue — AC-10).
         """
-        from flec.models import DetectionEvent, DetectionType
+        from flec.models import DetectionEvent, DetectionType, TaggedFrame
+
+        # Fan out to registered capability threads (non-blocking, drop oldest on full).
+        if self._capability_threads:
+            tagged = TaggedFrame(
+                frame=frame,
+                origin_mode=self._response_engine.mode,
+                timestamp_ns=time.monotonic_ns(),
+            )
+            for thread in self._capability_threads:
+                try:
+                    thread._input_queue.put(tagged, block=False)
+                except queue.Full:
+                    try:
+                        thread._input_queue.get_nowait()
+                    except queue.Empty:
+                        pass
+                    try:
+                        thread._input_queue.put(tagged, block=False)
+                    except queue.Full:
+                        pass
 
         # 1. Object identification — shapes & colors (Exploration / Challenge).
         #    Gate through the stabilizer so only steady, real detections are
