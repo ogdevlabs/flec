@@ -124,32 +124,32 @@ else
   ok ".venv already exists"
 fi
 
-# Activate
-# shellcheck disable=SC1091
-source .venv/bin/activate
+# Use explicit venv paths to avoid inheriting the system/anaconda Python
+PIP=".venv/bin/pip"
+PYTHON=".venv/bin/python"
 
 # ── 4. Python dependencies ────────────────────────────────────────────────────
 step "Python dependencies"
-pip install --upgrade pip "setuptools<81" --quiet
+"$PIP" install --upgrade pip "setuptools<81" --quiet
 # openai-whisper builds from sdist and needs setuptools<81 at build time
-pip install --no-build-isolation openai-whisper --quiet
-pip install -r requirements.txt --quiet
-pip install -e . --quiet
+"$PIP" install --no-build-isolation openai-whisper --quiet
+"$PIP" install -r requirements.txt --quiet
+"$PIP" install -e . --quiet
 ok "Python dependencies installed"
 
 # ── 5. AI models ──────────────────────────────────────────────────────────────
 step "AI model downloads"
 echo "  Running scripts/download_models.py..."
-python scripts/download_models.py
+"$PYTHON" scripts/download_models.py
 
 # ── 6. Fingertip reference fixtures ──────────────────────────────────────────
 step "Fingertip reference fixtures (HaGRID / yolo26n-pose training set)"
 if [ -n "$HF_TOKEN" ]; then
   echo "  Running scripts/download_fingertip_fixtures.py --source hf ..."
-  python scripts/download_fingertip_fixtures.py --source hf
+  "$PYTHON" scripts/download_fingertip_fixtures.py --source hf
 else
   echo "  No HF token — attempting direct download (sbercloud mirror)..."
-  python scripts/download_fingertip_fixtures.py --source auto
+  "$PYTHON" scripts/download_fingertip_fixtures.py --source auto
 fi
 
 # ── Done ──────────────────────────────────────────────────────────────────────

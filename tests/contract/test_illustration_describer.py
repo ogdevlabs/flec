@@ -27,7 +27,19 @@ _libs_available = (
     importlib.util.find_spec("transformers") is not None
     and importlib.util.find_spec("torch") is not None
 )
-_model_present = Path(".models/blip2").exists()
+def _blip2_model_ready() -> bool:
+    """Return True only when .models/blip2 contains real HF model files."""
+    blip2_dir = Path(".models/blip2")
+    if not blip2_dir.is_dir():
+        return False
+    # HuggingFace models always contain a config.json at the root or in a
+    # snapshots/*/  subdirectory.  An empty dir or one with only HF cache
+    # metadata (refs/, blobs/ without config.json) is not usable.
+    if any(blip2_dir.rglob("config.json")):
+        return True
+    return False
+
+_model_present = _blip2_model_ready()
 blip2_available = _libs_available and _model_present
 requires_blip2 = pytest.mark.skipif(
     not blip2_available,
