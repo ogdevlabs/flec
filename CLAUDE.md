@@ -8,7 +8,8 @@ the real world back to them with no screen and no data ever leaving the device.
 
 - **Language:** Python 3.11 (3.12 OK; not 3.13/3.14 — Coqui TTS caps at <3.12)
 - **Platform:** macOS (dev) · ARM64 embedded Linux (production)
-- **Computer vision:** OpenCV, MediaPipe (finger tracking), YOLOv8n / Ultralytics (shape + color)
+- **Computer vision:** OpenCV, MediaPipe (finger tracking), YOLO26n / Ultralytics (shape + color + segmentation + OBB + tracking + depth)
+- **Capability threads:** CapabilityThread base, DetectionThread, SegmentationThread, TrackingThread, OBBThread, DepthThread, SemanticThread
 - **Speech:** openWakeWord + openai-whisper tiny (in), Coqui TTS / VITS (out, needs `espeak-ng`)
 - **Reading:** EasyOCR (text), BLIP-2 INT8 / Transformers (illustration description)
 - **ML runtime:** PyTorch (MPS on macOS, no CUDA)
@@ -32,6 +33,8 @@ the real world back to them with no screen and no data ever leaving the device.
   - `openai-whisper` builds from sdist and needs `setuptools<81` present with `--no-build-isolation` (its `setup.py` imports the removed `pkg_resources`)
   - `mediapipe` is pinned `<0.10.30` — newer releases dropped the legacy `mp.solutions` API that `finger_tracker.py` uses
 - **Models:** `python scripts/download_models.py` (YOLOv8n, Whisper tiny, EasyOCR ship cleanly; Coqui VITS needs `espeak-ng`; BLIP-2 8-bit needs `accelerate`/`bitsandbytes`, unavailable on macOS MPS)
+- **Thread safety audit:** `python scripts/audit_thread_safety.py` — runs as a CI step; detects cross-module imports and module-level mutable state in capability thread modules
+- **Model integrity:** `_verify_models()` runs at boot; compares SHA-256 against `scripts/model_checksums.json`; degrades to Exploration mode on failure
 - **Run (dev):** `python -m flec.main --mode dev` · **Validate only:** `python -m flec.main --dry-run`
 - **Test:** `pytest` · fast: `pytest -m "not slow"` · `pytest tests/contract/` · `pytest tests/integration/`
 - **Deploy:** Not configured (on-device wearable; provisioning flow TBD)
@@ -50,6 +53,19 @@ The four child-facing modes: **Exploration** (narrate shapes/colors), **Challeng
 (voice-commanded find-it games), **Reading** (fingertip tracking reads words), **Story**
 (autonomous picture-book read-aloud). Wear detection suspends everything when the mask is off.
 
+The F-002 multi-thread architecture adds a **CapabilityThread** base class
+(`src/flec/main.py`) — a daemon `threading.Thread` with a bounded input queue
+(maxsize=5, drop-oldest) and an unbounded output queue. `FlecSession` fans out
+`TaggedFrame` objects to all registered capability threads on every frame
+(non-blocking). A **ThreadSupervisor** (`engine/thread_supervisor.py`) polls
+every 100ms and auto-restarts crashed threads within 500ms, transplanting the
+output queue reference so downstream consumers are unaffected. The
+**ResponseEngine** spawns one reader daemon per registered capability queue and
+validates `origin_mode` on every event — stale events from a previous mode are
+silently discarded (AC-10). TTS output is serialised through a single
+`_NarrationQueueTTS` (bounded, maxsize=50) that drops on overflow rather than
+blocking the frame thread.
+
 ## Coding Conventions
 
 - Modules/functions `snake_case`; classes `PascalCase`; enum members `SCREAMING_SNAKE`; env vars `FLEC_`-prefixed
@@ -58,6 +74,7 @@ The four child-facing modes: **Exploration** (narrate shapes/colors), **Challeng
 - Every capability module must degrade gracefully when its model/dependency is unavailable
 - No error messages ever reach the child — all user-facing feedback is audio
 - New capability modules must obey the queue-only contract (no cross-module imports)
+- Capability thread subclasses must extend `CapabilityThread`; output only via `_output_queue`; never import other capability modules at module level (lazy method imports are fine)
 
 ## Key Files
 
@@ -70,6 +87,15 @@ The four child-facing modes: **Exploration** (narrate shapes/colors), **Challeng
 - `src/flec/camera/camera_module.py` — frame capture + low-light detection
 - `requirements.txt` / `pyproject.toml` — deps and packaging
 - `specs/001-perception-core/quickstart.md` — full setup guide
+- `src/flec/perception/detection_thread.py` — DetectionThread (CapabilityThread wrapping ShapeColorDetector)
+- `src/flec/perception/segmentation_thread.py` — SegmentationThread (yolo26n-seg instance masks)
+- `src/flec/perception/tracking_thread.py` — TrackingThread (yolo26n model.track + BoTSORT stable IDs)
+- `src/flec/perception/obb_thread.py` — OBBThread (yolo26n-obb document orientation)
+- `src/flec/perception/depth_thread.py` — DepthThread (mode-lazy monocular depth stub)
+- `src/flec/perception/semantic_thread.py` — SemanticThread (mode-lazy per-pixel class stub)
+- `src/flec/engine/thread_supervisor.py` — ThreadSupervisor (100ms poll, auto-restart within 500ms)
+- `scripts/audit_thread_safety.py` — AST-based thread safety audit (CI step; exit 1 on violations)
+- `scripts/model_checksums.json` — SHA-256 registry for model supply-chain verification (T-008)
 
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:6cd5cc61 -->
