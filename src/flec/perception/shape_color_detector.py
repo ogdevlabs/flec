@@ -5,7 +5,7 @@ Strategy:
      configurable HSV range tables for the 8 spec colors.
   2. Contour-based shape classification: approximates polygons from large
      contours and classifies by vertex count and aspect ratio for 10 shapes.
-  3. YOLOv8n (optional): if a model file is present at `.models/yolov8n.pt`,
+  3. YOLO26n (optional): if a model file is present at `.models/yolo26n.pt`,
      it is loaded once at construction and used to improve detection accuracy
      for real-world frames. Gracefully skipped when ultralytics is not available
      or the model file is absent.
@@ -267,7 +267,7 @@ class ShapeColorDetector:
     ) -> None:
         """Args:
             model_path: YOLO weights. Defaults to FLEC_YOLO_MODEL env var, else
-                the cached ``.models/yolov8n.pt`` (nano — the on-device fit).
+                the cached ``.models/yolo26n.pt`` (nano — the on-device fit).
                 Point this at a larger/custom trained model for higher accuracy.
             enable_contour_shapes: When True (default, used by the shape/color
                 contract tests and the optional ``--shapes`` learning mode), also
@@ -277,7 +277,7 @@ class ShapeColorDetector:
         """
         if model_path is None:
             env_model = os.environ.get("FLEC_YOLO_MODEL")
-            model_path = Path(env_model) if env_model else self._MODELS_DIR / "yolov8n.pt"
+            model_path = Path(env_model) if env_model else self._MODELS_DIR / "yolo26n.pt"
         self._yolo = _try_load_yolo(model_path)
         self._enable_contour = enable_contour_shapes
         logger.info(json.dumps({

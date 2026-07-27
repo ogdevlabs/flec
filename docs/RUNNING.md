@@ -168,7 +168,7 @@ Probes device indices 1–5 for a Continuity Camera; if none is found, logs
 | `--log-level` | `DEBUG`…`ERROR` | `INFO` | Logging verbosity |
 | `--dry-run` | flag | off | Validate config + imports, then exit |
 | `FLEC_CAMERA_INDEX` | integer | — | Env override; **highest** precedence for device index |
-| `FLEC_YOLO_MODEL` | path | `.models/yolov8n.pt` | Use a larger/custom trained YOLO model |
+| `FLEC_YOLO_MODEL` | path | `.models/yolo26n.pt` | Use a larger/custom trained YOLO model |
 | `FLEC_TARGET_FPS` | number | `30` | Frame-processing rate cap |
 | `FLEC_READING_VELOCITY_THRESHOLD` | float | `0.08` | Max fingertip velocity (normalised/frame) to enter READING intent |
 | `FLEC_READING_FRAMES` | int | `3` | Consecutive low-velocity frames required before intent becomes READING |
