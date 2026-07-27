@@ -8,13 +8,6 @@ NOTE: These tests are marked xfail — the ResponseEngine challenge-mode routing
 is not yet implemented. Tracked in the beads backlog for phase 2.
 """
 
-import pytest
-
-pytestmark = pytest.mark.xfail(
-    reason="Challenge mode ResponseEngine routing not yet implemented (backlog)",
-    strict=False,
-)
-
 from __future__ import annotations
 
 import time
@@ -22,6 +15,11 @@ from typing import List
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+pytestmark = pytest.mark.xfail(
+    reason="Challenge mode ResponseEngine routing not yet implemented (backlog)",
+    strict=False,
+)
 
 from flec.models import (
     AudioPriority,

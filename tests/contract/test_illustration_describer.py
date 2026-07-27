@@ -28,16 +28,20 @@ _libs_available = (
     and importlib.util.find_spec("torch") is not None
 )
 def _blip2_model_ready() -> bool:
-    """Return True only when .models/blip2 contains real HF model files."""
+    """Return True only when .models/blip2 contains loadable model weights.
+
+    Requires both config.json AND at least one pytorch_model / model.safetensors
+    shard — a partial HF cache with only metadata files is not sufficient.
+    """
     blip2_dir = Path(".models/blip2")
     if not blip2_dir.is_dir():
         return False
-    # HuggingFace models always contain a config.json at the root or in a
-    # snapshots/*/  subdirectory.  An empty dir or one with only HF cache
-    # metadata (refs/, blobs/ without config.json) is not usable.
-    if any(blip2_dir.rglob("config.json")):
-        return True
-    return False
+    has_config = any(blip2_dir.rglob("config.json"))
+    has_weights = any(
+        blip2_dir.rglob(pat)
+        for pat in ("pytorch_model*.bin", "model*.safetensors", "model.bin")
+    )
+    return has_config and has_weights
 
 _model_present = _blip2_model_ready()
 blip2_available = _libs_available and _model_present
