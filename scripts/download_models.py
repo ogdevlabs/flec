@@ -37,15 +37,20 @@ def already_downloaded(path: Path) -> bool:
 
 
 def download_yolov8n() -> None:
-    """Download YOLOv8n model via ultralytics."""
-    dest = MODELS_DIR / "yolov8n.pt"
+    """Download YOLOv8n model via ultralytics and save as yolo26n.pt."""
+    dest = MODELS_DIR / "yolo26n.pt"
+    # Also accept the old filename from a previous download run
+    old = MODELS_DIR / "yolov8n.pt"
     if already_downloaded(dest):
         print(f"  [SKIP] YOLOv8n already at {dest}")
         return
-    print("  [DOWNLOAD] YOLOv8n (ultralytics)...")
+    if already_downloaded(old):
+        old.rename(dest)
+        print(f"  [OK] Renamed {old.name} → {dest.name}")
+        return
+    print("  [DOWNLOAD] YOLOv8n → yolo26n.pt (ultralytics)...")
     try:
         from ultralytics import YOLO
-        # ultralytics downloads to its own cache by default; export to .models/
         model = YOLO("yolov8n.pt")
         src = Path("yolov8n.pt")
         if src.exists():

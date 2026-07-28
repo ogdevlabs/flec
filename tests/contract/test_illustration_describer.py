@@ -35,11 +35,14 @@ def _blip2_model_ready() -> bool:
     """Return True only when .models/blip2 contains flat, loadable weights.
 
     Requires config.json at the directory root (not nested in HF cache subdirs)
-    AND at least one weight shard.  snapshot_download(..., local_dir=) writes
-    the flat layout; cache_dir= writes a nested layout that local_files_only=True
-    cannot read from the root path.
+    AND at least one weight shard AND the accelerate package (needed by
+    from_pretrained with device_map="auto").  snapshot_download(..., local_dir=)
+    writes the flat layout; cache_dir= writes a nested layout that
+    local_files_only=True cannot read from the root path.
     """
     if os.environ.get("FLEC_SKIP_BLIP2"):
+        return False
+    if importlib.util.find_spec("accelerate") is None:
         return False
     blip2_dir = Path(".models/blip2")
     if not (blip2_dir / "config.json").exists():

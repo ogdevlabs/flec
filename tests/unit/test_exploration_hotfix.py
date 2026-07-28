@@ -161,10 +161,11 @@ class TestHSVNotInLiveSession:
 
     def test_no_color_events_without_yolo(self) -> None:
         """With YOLO absent and contour shapes off, detect() returns empty list."""
+        from pathlib import Path
         from flec.perception.shape_color_detector import ShapeColorDetector
 
         detector = ShapeColorDetector(
-            model_path=None,
+            model_path=Path(".models/nonexistent_model_for_test.pt"),
             enable_contour_shapes=False,
         )
         assert detector._yolo is None, "Expected YOLO to be absent for this test"

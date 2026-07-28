@@ -73,6 +73,15 @@ _OBJECT_COLOR_TEMPLATES: list[str] = [
     "Oh! {article} {color} {label}!",
 ]
 
+_PERSON_TEMPLATES: list[str] = [
+    "I see someone!",
+    "Hey, there's a person!",
+    "Look, someone's there!",
+    "Oh! I see a person!",
+    "Wow, a person!",
+    "Hey! Someone's here!",
+]
+
 _COLOR_SCENE_TEMPLATES: list[str] = [
     "Ooh, I see {label}!",
     "I spy something {label}!",
@@ -121,16 +130,19 @@ def narrate_detection(event: DetectionEvent, paired_color: Optional[str] = None)
     elif event.type == DetectionType.COLOR:
         text = random_variant(_COLOR_SCENE_TEMPLATES, label=label, article=_article(label))
     elif event.type == DetectionType.OBJECT:
-        color = paired_color or (event.metadata or {}).get("color")
-        if color:
-            text = random_variant(
-                _OBJECT_COLOR_TEMPLATES,
-                color=color,
-                label=label,
-                article=_article(color),
-            )
+        if label == "person":
+            text = random_variant(_PERSON_TEMPLATES)
         else:
-            text = random_variant(_OBJECT_TEMPLATES, label=label, article=_article(label))
+            color = paired_color or (event.metadata or {}).get("color")
+            if color:
+                text = random_variant(
+                    _OBJECT_COLOR_TEMPLATES,
+                    color=color,
+                    label=label,
+                    article=_article(color),
+                )
+            else:
+                text = random_variant(_OBJECT_TEMPLATES, label=label, article=_article(label))
     else:
         text = "I see something interesting!"
 
