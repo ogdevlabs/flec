@@ -121,9 +121,9 @@ a word.
 
 | Symptom | Cause / Fix |
 |---|---|
-| Words not read / silent | Say "reading" first; check `FLEC_READING_VELOCITY_THRESHOLD` — lower = stricter settle required |
+| Words not read / silent | Say "reading" first; **raise** `FLEC_OCR_SETTLE_THRESHOLD` (default `0.02`) — a higher value lets OCR fire at a faster velocity, making the trigger easier to hit |
 | Wrong word / gibberish | Raise `FLEC_OCR_CONF_GATE` (default 0.4) to require higher confidence before speaking |
-| Stale word spoken after moving finger | Lower `FLEC_OCR_SETTLE_THRESHOLD` so the settle gate resets faster |
+| Stale word spoken after moving finger | Handled by word-change flush (`clear_pending`) — pending narration is cleared the moment a new word is detected; ensure the finger lifts cleanly between words so the new word is recognised promptly |
 | "reading_ocr_unavailable" in logs | Run `python scripts/download_models.py` — EasyOCR model missing |
 | Illustration never described | BLIP-2 unavailable on macOS MPS (expected); silent fallback is by design |
 
@@ -168,7 +168,7 @@ Probes device indices 1–5 for a Continuity Camera; if none is found, logs
 | `--log-level` | `DEBUG`…`ERROR` | `INFO` | Logging verbosity |
 | `--dry-run` | flag | off | Validate config + imports, then exit |
 | `FLEC_CAMERA_INDEX` | integer | — | Env override; **highest** precedence for device index |
-| `FLEC_YOLO_MODEL` | path | `.models/yolov8n.pt` | Use a larger/custom trained YOLO model |
+| `FLEC_YOLO_MODEL` | path | `.models/yolo26n.pt` | Use a larger/custom trained YOLO model |
 | `FLEC_TARGET_FPS` | number | `30` | Frame-processing rate cap |
 | `FLEC_READING_VELOCITY_THRESHOLD` | float | `0.08` | Max fingertip velocity (normalised/frame) to enter READING intent |
 | `FLEC_READING_FRAMES` | int | `3` | Consecutive low-velocity frames required before intent becomes READING |

@@ -1,0 +1,229 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["phase/1-setup", "main"]
+
+# Cancel any in-flight run on the same branch the moment a new commit arrives.
+# github.head_ref is set on pull_request events (the source branch name);
+# github.ref is used for push events. Together they ensure only one run
+# per branch is active at a time across both push and PR triggers.
+concurrency:
+  group: ci-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+  # HF token injected from repository secret (Settings → Secrets → Actions).
+  HUGGING_FACE_HUB_TOKEN: ${{ secrets.HUGGING_FACE_HUB_TOKEN }}
+  # Skip BLIP-2 download and its contract tests in CI: the model is 4 GB,
+  # requires bitsandbytes (Linux x86_64 GPU), and is not practical on
+  # standard ubuntu-latest runners.  Tests that need it are @requires_blip2
+  # and are skipped when this var is set.
+  FLEC_SKIP_BLIP2: "1"
+
+jobs:
+  # ── 1. Lint & static analysis (fast, no heavy deps) ───────────────────────
+  lint:
+    name: Lint & static analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install lint tools
+        run: pip install ruff
+
+      - name: Ruff lint
+        # E9/F63x/F7xx/F8xx: syntax errors, undefined names, unused imports in src
+        run: ruff check src/ tests/ scripts/
+
+      - name: Thread safety audit
+        run: python scripts/audit_thread_safety.py
+
+  # ── 2. Secret scan ─────────────────────────────────────────────────────────
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect hardcoded credentials
+        run: |
+          # On pull_request events github.event.before may be empty; fall back to HEAD~1
+          BEFORE="${{ github.event.before }}"
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            BEFORE="HEAD~1"
+          fi
+          if git log --diff-filter=A -p "${BEFORE}..${{ github.sha }}" 2>/dev/null \
+            | grep -qE 'AKIA[0-9A-Z]{16}|ghp_[0-9A-Za-z]{36}|sk_live_[0-9A-Za-z]{24}|-----BEGIN (RSA|EC|OPENSSH) PRIVATE KEY'; then
+            echo "::error::Potential secrets detected in new commits — review diff above"
+            exit 1
+          fi
+          echo "Secret scan: clean"
+
+  # ── Shared install helper (composite-like via reusable steps) ──────────────
+  # Each test job installs independently; pip download cache is shared via
+  # actions/setup-python cache: pip, so re-installs are fast (no network hit).
+
+  # ── 3. Unit tests ──────────────────────────────────────────────────────────
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            espeak-ng libgl1 libglib2.0-0
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip "setuptools<81"
+          pip install --no-build-isolation openai-whisper
+          pip install -r requirements.txt
+          pip install -e .
+
+      - name: Restore model cache
+        uses: actions/cache@v4
+        with:
+          path: .models/
+          key: models-${{ hashFiles('scripts/model_checksums.json', 'scripts/download_models.py') }}
+          restore-keys: models-
+
+      - name: Download models (skips already-present)
+        run: python scripts/download_models.py
+
+      - name: Run unit tests
+        run: pytest tests/unit/ -m "not slow" -q --tb=short --junitxml=junit-unit.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-unit
+          path: junit-unit.xml
+
+  # ── 4. Contract tests ──────────────────────────────────────────────────────
+  contract-tests:
+    name: Contract tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            espeak-ng libgl1 libglib2.0-0
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip "setuptools<81"
+          pip install --no-build-isolation openai-whisper
+          pip install -r requirements.txt
+          pip install -e .
+
+      - name: Restore model cache
+        uses: actions/cache@v4
+        with:
+          path: .models/
+          key: models-${{ hashFiles('scripts/model_checksums.json', 'scripts/download_models.py') }}
+          restore-keys: models-
+
+      - name: Download models (skips already-present)
+        run: python scripts/download_models.py
+
+      - name: Run contract tests
+        run: pytest tests/contract/ -q --tb=short --junitxml=junit-contract.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-contract
+          path: junit-contract.xml
+
+  # ── 5. Integration tests ───────────────────────────────────────────────────
+  integration-tests:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            espeak-ng libgl1 libglib2.0-0
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip "setuptools<81"
+          pip install --no-build-isolation openai-whisper
+          pip install -r requirements.txt
+          pip install -e .
+
+      - name: Restore model cache
+        uses: actions/cache@v4
+        with:
+          path: .models/
+          key: models-${{ hashFiles('scripts/model_checksums.json', 'scripts/download_models.py') }}
+          restore-keys: models-
+
+      - name: Download models (skips already-present)
+        run: python scripts/download_models.py
+
+      - name: Run integration tests
+        run: pytest tests/integration/ -q --tb=short --junitxml=junit-integration.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-integration
+          path: junit-integration.xml
+
+  # ── 6. Summary gate (required status check for branch protection) ──────────
+  ci-pass:
+    name: CI passed
+    runs-on: ubuntu-latest
+    needs: [lint, secret-scan, unit-tests, contract-tests, integration-tests]
+    if: always()
+    steps:
+      - name: Check all jobs succeeded
+        run: |
+          python3 - <<'EOF'
+          import json, sys
+          data = json.loads('''${{ toJSON(needs) }}''')
+          failed = [k for k, v in data.items() if v["result"] not in ("success", "skipped")]
+          if failed:
+              print("FAILED jobs:", failed)
+              sys.exit(1)
+          print("All jobs passed.")
+          EOF

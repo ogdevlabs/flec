@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import queue
+import threading
 import time
 from typing import Optional, Protocol
 
@@ -76,6 +77,62 @@ class _QueueTTS:
         pass
 
 
+class _NarrationQueueTTS:
+    """Bounded narration queue + dispatcher thread wrapping a real TTS backend.
+
+    Protects against unbounded queue growth (T-005). The dispatcher dequeues
+    AudioResponse objects in FIFO order and calls the real backend's speak().
+    When the queue is full, the incoming response is dropped with a warning log.
+    """
+
+    def __init__(self, tts_backend: _TTSProtocol, maxsize: int = 50) -> None:
+        self._backend = tts_backend
+        self._q: queue.Queue = queue.Queue(maxsize=maxsize)
+        self._thread = threading.Thread(
+            target=self._dispatch_loop,
+            name="flec.narration_dispatcher",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def speak(self, response: AudioResponse) -> None:
+        try:
+            self._q.put_nowait(response)
+        except queue.Full:
+            logger.warning(json.dumps({
+                "event": "narration_queue_full",
+                "dropped": response.text[:40],
+            }))
+
+    def stop_current(self) -> None:
+        self._backend.stop_current()
+
+    def clear_pending(self) -> None:
+        while not self._q.empty():
+            try:
+                self._q.get_nowait()
+            except queue.Empty:
+                break
+        self._backend.clear_pending()
+
+    def _dispatch_loop(self) -> None:
+        while True:
+            item = self._q.get()
+            if item is None:
+                break
+            try:
+                self._backend.speak(item)
+            except Exception as exc:
+                logger.error(json.dumps({
+                    "event": "tts_dispatch_error",
+                    "error": str(exc),
+                }))
+
+    def shutdown(self) -> None:
+        self._q.put(None)
+        self._thread.join(timeout=1.0)
+
+
 # ---------------------------------------------------------------------------
 # ResponseEngine
 # ---------------------------------------------------------------------------
@@ -103,8 +160,11 @@ class ResponseEngine:
         audio_queue: Optional[queue.Queue] = None,
         ar_overlay=None,
     ) -> None:
+        self._narration_tts: Optional[_NarrationQueueTTS] = None
+
         if tts is not None:
-            self._tts: _TTSProtocol = tts
+            self._narration_tts = _NarrationQueueTTS(tts)
+            self._tts: _TTSProtocol = self._narration_tts
         elif audio_queue is not None:
             self._tts = _QueueTTS(audio_queue)
         else:
@@ -122,6 +182,10 @@ class ResponseEngine:
 
         # Reading mode: pending illustration description
         self._pending_illustration: Optional[str] = None
+
+        # Multi-thread reader infrastructure
+        self._reader_threads: list[tuple[threading.Thread, queue.Queue]] = []
+        self._shutdown_event: threading.Event = threading.Event()
 
         logger.info(json.dumps({"event": "response_engine.init", "mode": self._mode.name}))
 
@@ -205,6 +269,71 @@ class ResponseEngine:
     def set_pending_illustration(self, description: str) -> None:
         """Inject a pending illustration description for the next READING event."""
         self._pending_illustration = description
+
+    @property
+    def has_pending_illustration(self) -> bool:
+        return self._pending_illustration is not None
+
+    # ------------------------------------------------------------------
+    # Multi-thread reader API
+    # ------------------------------------------------------------------
+
+    def add_capability_queue(self, q: queue.Queue) -> None:
+        """Spawn a daemon reader thread that drains DetectionEvents from ``q``.
+
+        The thread applies mode-tag validation: events whose ``origin_mode``
+        doesn't match the current engine mode are discarded (AC-10). Events
+        with ``origin_mode=None`` always pass through (legacy/backward compat).
+
+        The thread exits when it receives a ``None`` sentinel OR when
+        ``_shutdown_event`` is set.
+        """
+        t = threading.Thread(
+            target=self._reader_loop,
+            args=(q,),
+            name="flec.capability_reader",
+            daemon=True,
+        )
+        self._reader_threads.append((t, q))
+        t.start()
+
+    def _reader_loop(self, q: queue.Queue) -> None:
+        """Internal loop run by each capability reader thread."""
+        while not self._shutdown_event.is_set():
+            try:
+                event = q.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            if event is None:
+                break
+            if event.origin_mode is not None and event.origin_mode != self._mode:
+                logger.debug(json.dumps({
+                    "event": "response_engine.stale_discarded",
+                    "origin_mode": event.origin_mode.name,
+                    "current_mode": self._mode.name,
+                }))
+                continue
+            self.on_event(event)
+
+    def shutdown(self) -> None:
+        """Stop all reader threads and the narration dispatcher.
+
+        Sends a ``None`` sentinel to each capability queue to unblock reader
+        threads, then joins them with a 1-second timeout each. Also shuts down
+        the ``_NarrationQueueTTS`` dispatcher if the ``tts=`` path is active.
+        """
+        self._shutdown_event.set()
+        # Unblock all reader threads via sentinel
+        for _, q in self._reader_threads:
+            try:
+                q.put_nowait(None)
+            except queue.Full:
+                pass
+        for t, _ in self._reader_threads:
+            t.join(timeout=1.0)
+        # Shutdown narration dispatcher if active
+        if self._narration_tts is not None:
+            self._narration_tts.shutdown()
 
     # ------------------------------------------------------------------
     # Main event router
@@ -365,11 +494,13 @@ class ResponseEngine:
 
     def _handle_exploration_detection(self, event: DetectionEvent) -> None:
         from flec.audio.responses import build_exploration_response, exploration_narration
-        dedup_key = (event.type, event.label.lower())
+        # Include color in the dedup key so "red cup" and "blue cup" are each narrated.
+        paired_color: Optional[str] = (event.metadata or {}).get("color")
+        dedup_key = (event.type, event.label.lower(), paired_color)
         if self._is_recently_spoken(dedup_key):
             return
         try:
-            response = build_exploration_response(event)
+            response = build_exploration_response(event, paired_color=paired_color)
         except Exception:
             response = AudioResponse(
                 text=exploration_narration(event.label),
@@ -386,6 +517,7 @@ class ResponseEngine:
         logger.info(json.dumps({
             "event": "response_engine.exploration_narrated",
             "label": event.label,
+            "color": paired_color,
         }))
 
     # ------------------------------------------------------------------

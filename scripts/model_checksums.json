@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "models": {
+    "yolo26n": {
+      "path": ".models/yolo26n.pt",
+      "sha256": "PLACEHOLDER_VERIFY_BEFORE_PRODUCTION",
+      "minisign_sig": "PLACEHOLDER_RUN_minisign_-S_-s_flec-models.key_-m_scripts/model_checksums.json"
+    },
+    "yolo26n-pose": {
+      "path": ".models/yolo26n-pose.pt",
+      "sha256": "PLACEHOLDER_VERIFY_BEFORE_PRODUCTION",
+      "minisign_sig": "PLACEHOLDER_RUN_minisign_-S_-s_flec-models.key_-m_scripts/model_checksums.json"
+    },
+    "yolo26n-seg": {
+      "path": ".models/yolo26n-seg.pt",
+      "sha256": "PLACEHOLDER_VERIFY_BEFORE_PRODUCTION",
+      "minisign_sig": "PLACEHOLDER_RUN_minisign_-S_-s_flec-models.key_-m_scripts/model_checksums.json"
+    },
+    "yolo26n-obb": {
+      "path": ".models/yolo26n-obb.pt",
+      "sha256": "PLACEHOLDER_VERIFY_BEFORE_PRODUCTION",
+      "minisign_sig": "PLACEHOLDER_RUN_minisign_-S_-s_flec-models.key_-m_scripts/model_checksums.json"
+    }
+  },
+  "public_key": "PLACEHOLDER_PASTE_minisign_PUBLIC_KEY_HERE",
+  "_note": "SHA-256 checksums and minisign signature are placeholders. Run scripts/sign_checksums.sh after downloading actual model files."
+}

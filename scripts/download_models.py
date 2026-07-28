@@ -15,6 +15,11 @@ import os
 import sys
 from pathlib import Path
 
+# Load .env before anything else so HUGGING_FACE_HUB_TOKEN is available
+sys.path.insert(0, str(Path(__file__).parent))
+from _env import load_dotenv  # noqa: E402
+load_dotenv()
+
 MODELS_DIR = Path(__file__).parent.parent / ".models"
 
 
@@ -32,15 +37,20 @@ def already_downloaded(path: Path) -> bool:
 
 
 def download_yolov8n() -> None:
-    """Download YOLOv8n model via ultralytics."""
-    dest = MODELS_DIR / "yolov8n.pt"
+    """Download YOLOv8n model via ultralytics and save as yolo26n.pt."""
+    dest = MODELS_DIR / "yolo26n.pt"
+    # Also accept the old filename from a previous download run
+    old = MODELS_DIR / "yolov8n.pt"
     if already_downloaded(dest):
         print(f"  [SKIP] YOLOv8n already at {dest}")
         return
-    print("  [DOWNLOAD] YOLOv8n (ultralytics)...")
+    if already_downloaded(old):
+        old.rename(dest)
+        print(f"  [OK] Renamed {old.name} → {dest.name}")
+        return
+    print("  [DOWNLOAD] YOLOv8n → yolo26n.pt (ultralytics)...")
     try:
         from ultralytics import YOLO
-        # ultralytics downloads to its own cache by default; export to .models/
         model = YOLO("yolov8n.pt")
         src = Path("yolov8n.pt")
         if src.exists():
@@ -103,31 +113,118 @@ def download_easyocr_latin() -> None:
 
 
 def download_blip2() -> None:
-    """Download BLIP-2 INT8 model via HuggingFace transformers."""
-    dest_dir = MODELS_DIR / "blip2-int8"
-    if already_downloaded(dest_dir):
-        print(f"  [SKIP] BLIP-2 INT8 already at {dest_dir}")
+    """Download BLIP-2 model via HuggingFace Hub snapshot_download.
+
+    Uses snapshot_download with local_dir= so files land flat in .models/blip2/
+    (not in the nested models--Salesforce--blip2-opt-2.7b-coco/snapshots/...
+    cache structure).  illustration_describer.py loads from that flat path with
+    local_files_only=True, which requires the flat layout.
+
+    Set FLEC_SKIP_BLIP2=1 to skip entirely (used in CI where bitsandbytes is
+    unavailable and the 4 GB download is impractical).
+    """
+    if os.environ.get("FLEC_SKIP_BLIP2"):
+        print("  [SKIP] BLIP-2 — FLEC_SKIP_BLIP2 is set")
         return
-    print("  [DOWNLOAD] BLIP-2 INT8 (transformers / HuggingFace)...")
+
+    dest_dir = MODELS_DIR / "blip2"
+
+    # Only consider it downloaded if the flat config.json is present at root
+    # (not nested inside a HF cache subdirectory).
+    if (dest_dir / "config.json").exists():
+        print(f"  [SKIP] BLIP-2 already at {dest_dir}")
+        return
+
+    token = os.environ.get("HUGGING_FACE_HUB_TOKEN") or os.environ.get("HF_TOKEN") or None
+    if not token:
+        print("  [INFO] HUGGING_FACE_HUB_TOKEN not set — attempting unauthenticated download")
+        print("         Set it in .env to avoid rate-limiting on large model files")
+
+    print("  [DOWNLOAD] BLIP-2 (HuggingFace Hub snapshot, ~4 GB — may take several minutes)...")
     try:
-        from transformers import Blip2Processor, Blip2ForConditionalGeneration
+        from huggingface_hub import snapshot_download
         ensure_dir(dest_dir)
         model_id = "Salesforce/blip2-opt-2.7b-coco"
-        print(f"    Downloading processor from {model_id}...")
-        processor = Blip2Processor.from_pretrained(model_id, cache_dir=str(dest_dir))
-        print(f"    Downloading model weights (INT8, may take several minutes)...")
-        model = Blip2ForConditionalGeneration.from_pretrained(
-            model_id,
-            load_in_8bit=True,
-            device_map="auto",
-            cache_dir=str(dest_dir),
+        hf_kwargs = {"token": token} if token else {}
+        snapshot_download(
+            repo_id=model_id,
+            local_dir=str(dest_dir),
+            **hf_kwargs,
         )
-        print(f"  [OK] BLIP-2 INT8 saved to {dest_dir}")
-        del processor, model
-    except ImportError as e:
-        print(f"  [WARN] Required package not installed ({e}) — skipping BLIP-2 download")
+        print(f"  [OK] BLIP-2 saved to {dest_dir}")
+    except ImportError:
+        print("  [WARN] huggingface_hub not installed — skipping BLIP-2 download")
+        print("         Install: pip install huggingface_hub")
     except Exception as e:
-        print(f"  [WARN] BLIP-2 download failed ({e}) — skipping")
+        print(f"  [WARN] BLIP-2 download failed: {e}")
+
+
+# Registry of YOLO26n model variants needed for F-002
+# SHA-256 checksums are placeholder values until official weights are released
+YOLO26_MODELS = {
+    "yolo26n": {
+        "path": ".models/yolo26n.pt",
+        "url": "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt",
+        "sha256": "PLACEHOLDER_VERIFY_BEFORE_PRODUCTION",
+        "description": "YOLO26n detection (2.4M params)",
+    },
+    "yolo26n-pose": {
+        "path": ".models/yolo26n-pose.pt",
+        "url": "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n-pose.pt",
+        "sha256": "PLACEHOLDER_VERIFY_BEFORE_PRODUCTION",
+        "description": "YOLO26n pose estimation",
+    },
+    "yolo26n-seg": {
+        "path": ".models/yolo26n-seg.pt",
+        "url": "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n-seg.pt",
+        "sha256": "PLACEHOLDER_VERIFY_BEFORE_PRODUCTION",
+        "description": "YOLO26n instance segmentation",
+    },
+    "yolo26n-obb": {
+        "path": ".models/yolo26n-obb.pt",
+        "url": "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n-obb.pt",
+        "sha256": "PLACEHOLDER_VERIFY_BEFORE_PRODUCTION",
+        "description": "YOLO26n oriented bounding box (document detection)",
+    },
+}
+
+
+def download_yolo26_models() -> None:
+    """Download YOLO26n model variants for F-002 multi-task perception."""
+    for name, spec in YOLO26_MODELS.items():
+        dest = Path(spec["path"])
+        if already_downloaded(dest):
+            print(f"  [SKIP] {name} already at {dest}")
+            continue
+        print(f"  [DOWNLOAD] {name} ({spec['description']})...")
+        try:
+            from ultralytics import YOLO
+            ensure_dir(dest.parent)
+            model = YOLO(dest.name)
+            src = Path(dest.name)
+            if src.exists():
+                src.rename(dest)
+            print(f"  [OK] {name} saved to {dest}")
+        except ImportError:
+            print(f"  [WARN] ultralytics not installed — skipping {name}")
+        except Exception as e:
+            print(f"  [WARN] {name} download failed: {e}")
+
+
+def verify_checksums(checksums_path: Path) -> None:
+    """Verify model SHA-256 checksums against model_checksums.json.
+
+    Stub implementation — full verification requires minisign Python bindings
+    on ARM64 (not yet available). When implemented, this function should:
+      1. Load the public key from checksums_path["public_key"].
+      2. Verify checksums_path.minisig using minisign -V.
+      3. For each model entry, compute sha256(model_path) and compare.
+      4. Raise RuntimeError on any mismatch.
+
+    See docs/KEYS.md for the signing workflow.
+    """
+    # TODO: verify_checksums(MODELS_DIR / "model_checksums.json")
+    pass
 
 
 def main() -> None:
@@ -136,12 +233,16 @@ def main() -> None:
     print("-" * 50)
     ensure_dir(MODELS_DIR)
 
+    # TODO: verify_checksums(MODELS_DIR / "model_checksums.json")
+    # Uncomment once minisign Python bindings are available on ARM64.
+
     steps = [
         ("YOLOv8n", download_yolov8n),
         ("Whisper tiny", download_whisper_tiny),
         ("Coqui VITS", download_coqui_vits),
         ("EasyOCR latin", download_easyocr_latin),
         ("BLIP-2 INT8", download_blip2),
+        ("YOLO26n variants", download_yolo26_models),
     ]
 
     for name, fn in steps:

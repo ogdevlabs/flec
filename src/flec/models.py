@@ -10,7 +10,10 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    import numpy as np
 
 
 # ---------------------------------------------------------------------------
@@ -47,6 +50,9 @@ class DetectionType(Enum):
     TEXT = auto()           # OCR text found
     ILLUSTRATION = auto()   # Illustration described
     VOICE_CMD = auto()      # Wake word + parsed command
+    DOCUMENT = auto()       # F-002: OBB-detected book, card, or page
+    DEPTH = auto()          # F-002: monocular depth map
+    SEMANTIC = auto()       # F-002: semantic segmentation mask
 
 
 class AudioPriority(Enum):
@@ -105,6 +111,22 @@ class ReadingIntent(Enum):
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class TaggedFrame:
+    """A camera frame tagged with the Mode active at dispatch time.
+
+    Used by FlecSession to fan out frames to capability threads. Capability
+    threads copy origin_mode into their DetectionEvent output so ResponseEngine
+    can discard stale results after a mode switch (AC-10).
+
+    Ephemeral — never persisted or written to disk.
+    """
+
+    frame: "np.ndarray"     # Raw BGR frame from the camera
+    origin_mode: Mode       # Mode active when FlecSession dispatched this frame
+    timestamp_ns: int       # Monotonic nanosecond timestamp at dispatch time
+
+
 @dataclass(frozen=True)
 class BoundingBox:
     """Normalised bounding box in [0.0, 1.0] coordinate space.
@@ -139,6 +161,14 @@ class DetectionEvent:
     timestamp: float = field(default_factory=time.monotonic)
     bounding_box: Optional[BoundingBox] = None   # Present for spatial detections
     metadata: dict = field(default_factory=dict) # Extensible; not persisted
+
+    # F-002: thread-isolation and multi-task fields (all Optional for backward compat)
+    origin_mode: Optional[Mode] = None              # Mode at dispatch time; used for mode-tag validation
+    mask: Optional["np.ndarray"] = None             # Instance segmentation mask (yolo26n-seg)
+    track_id: Optional[int] = None                  # Stable object ID from model.track() (yolo26n tracking)
+    obb_angle: Optional[float] = None               # Rotation angle in degrees (yolo26n-obb)
+    depth_map: Optional["np.ndarray"] = None        # Monocular depth map (yolo26n-depth stub)
+    semantic_mask: Optional["np.ndarray"] = None    # Semantic segmentation mask (yolo26n-semantic stub)
 
     def __post_init__(self) -> None:
         if not (0.0 <= self.confidence <= 1.0):

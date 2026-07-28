@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -136,17 +137,22 @@ class IllustrationDescriber:
             )
             import torch  # type: ignore[import-untyped]
 
-            model_path = ".models/blip2"
+            model_path = Path(".models/blip2").resolve()
+
+            if not model_path.exists():
+                raise FileNotFoundError(f"BLIP-2 model directory not found: {model_path}")
+
+            model_path_str = str(model_path)
 
             # Load processor
             self._processor = AutoProcessor.from_pretrained(
-                model_path,
+                model_path_str,
                 local_files_only=True,
             )
 
             # Load model with INT8 quantization for memory efficiency on ARM64
             self._model = Blip2ForConditionalGeneration.from_pretrained(
-                model_path,
+                model_path_str,
                 load_in_8bit=True,
                 device_map="auto",
                 local_files_only=True,

@@ -21,6 +21,7 @@ from collections import deque
 from typing import Optional
 
 import numpy as np
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,49 @@ class _DetectionStabilizer:
                 counts[key] = counts.get(key, 0) + 1
 
         return [e for key, e in current.items() if counts[key] >= self._min_hits]
+
+
+# ---------------------------------------------------------------------------
+# CapabilityThread base class
+# ---------------------------------------------------------------------------
+
+
+class CapabilityThread(threading.Thread):
+    """Base class for queue-isolated perception threads.
+
+    Subclasses implement _process_tagged_frame() which reads TaggedFrames from
+    self._input_queue and writes DetectionEvents to self._output_queue.
+    """
+
+    def __init__(self, input_queue_maxsize: int = 5) -> None:
+        super().__init__(daemon=True)
+        self._input_queue: queue.Queue = queue.Queue(maxsize=input_queue_maxsize)
+        self._output_queue: queue.Queue = queue.Queue()
+        self._stop_event: threading.Event = threading.Event()
+
+    def get_output_queue(self) -> queue.Queue:
+        return self._output_queue
+
+    def reset_tracking(self) -> None:
+        while not self._input_queue.empty():
+            try:
+                self._input_queue.get_nowait()
+            except queue.Empty:
+                break
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def run(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                tagged_frame = self._input_queue.get(timeout=0.05)
+                self._process_tagged_frame(tagged_frame)
+            except queue.Empty:
+                continue
+
+    def _process_tagged_frame(self, tagged_frame) -> None:
+        pass  # Subclasses override this
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +193,12 @@ class FlecSession:
             os.environ.get("FLEC_OCR_CONF_GATE", "0.4")
         )
         self._ocr_cached_orient: Optional[str] = None
+        # Throttle exploration-mode BLIP-2 fallback: describe the scene at most
+        # once every N seconds when YOLO is absent.
+        self._explore_describe_interval: float = float(
+            os.environ.get("FLEC_EXPLORE_DESCRIBE_INTERVAL", "4.0")
+        )
+        self._explore_last_described_at: float = 0.0
 
         # Real audio output (Coqui VITS → say → log, per backend availability).
         self._tts_engine = TTSEngine(backend=tts_backend)
@@ -157,22 +207,29 @@ class FlecSession:
         # Boot into Exploration so the mask narrates objects it sees right away.
         self._response_engine.set_mode(FlecMode.EXPLORATION)
 
-        # Dev wear override (R10): the integrated webcam has no wear sensor, so
-        # wear-state would stay OFF_HEAD and gate Reading off. Treat the mask as
-        # worn in dev (env-overridable) so Reading activates.
-        from flec.models import WearState as _WearState
-
-        wear_override = os.environ.get(
-            "FLEC_READING_WEAR_OVERRIDE", "1" if mode == "dev" else "0"
-        )
-        if wear_override.lower() not in ("0", "false", "no"):
+        # Dev mode: treat the webcam as always worn (no physical wear sensor on dev).
+        # Disable with FLEC_READING_WEAR_OVERRIDE=0 for tests that need OFF_HEAD state.
+        if mode == "dev" and os.environ.get("FLEC_READING_WEAR_OVERRIDE", "1") != "0":
+            from flec.models import WearState as _WearState
             self._response_engine.set_wear_state(_WearState.ON_HEAD)
+
+        # Capability threads registered by Wave-2 tasks. process_frame fans out
+        # TaggedFrames to each thread's input queue (non-blocking; drop-oldest).
+        self._capability_threads: list = []
 
         # Microphone front-end (optional). Only started if voice is requested
         # and a Whisper model + mic device are actually available.
         self._mic: Optional[object] = None
         if voice:
             self._start_mic()
+
+        # Boot integrity: verify model checksums, then pre-warm threads
+        if not self._verify_models():
+            logger.warning(json.dumps({"event": "model_checksum_degraded",
+                                       "fallback": "exploration_mode"}))
+            self._response_engine.set_mode(FlecMode.EXPLORATION)
+        if self._capability_threads:
+            self._warm_models()
 
         logger.info(json.dumps({
             "event": "flec_session_init",
@@ -203,24 +260,178 @@ class FlecSession:
                 "event": "voice_disabled", "reason": "mic_unavailable",
             }))
 
+    def _verify_models(self) -> bool:
+        """Verify SHA-256 checksums for all registered YOLO26 models (T-008).
+
+        Returns True if all present models pass; False if any fail.
+        Missing files and PLACEHOLDER checksums are skipped (graceful degradation).
+        """
+        import hashlib
+        import importlib.util
+
+        _scripts_path = Path(__file__).parent.parent.parent / "scripts" / "download_models.py"
+        spec = importlib.util.spec_from_file_location("_download_models", _scripts_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        yolo26_models = mod.YOLO26_MODELS
+
+        all_ok = True
+        for name, spec_entry in yolo26_models.items():
+            model_path = Path(spec_entry["path"])
+            expected_sha = spec_entry.get("sha256", "")
+            if not model_path.exists():
+                continue
+            if expected_sha.startswith("PLACEHOLDER"):
+                logger.info(json.dumps({"event": "model_checksum_skipped", "model": name,
+                                        "reason": "placeholder_sha256"}))
+                continue
+            h = hashlib.sha256()
+            with open(model_path, "rb") as f:
+                for chunk in iter(lambda: f.read(65536), b""):
+                    h.update(chunk)
+            actual = h.hexdigest()
+            if actual != expected_sha:
+                logger.warning(json.dumps({"event": "model_checksum_failed", "model": name,
+                                           "expected": expected_sha[:16], "actual": actual[:16]}))
+                all_ok = False
+            else:
+                logger.info(json.dumps({"event": "model_loaded", "model": name,
+                                        "sha256": actual[:16]}))
+        return all_ok
+
+    def _warm_models(self) -> None:
+        """Pre-warm capability threads sequentially with a synthetic blank frame.
+
+        Logs model_warmed per thread and boot_complete with peak_ram_pct.
+        Warns if peak RAM exceeds 80%.
+        """
+        import resource
+
+        from flec.models import TaggedFrame, Mode as FlecMode
+        blank = np.zeros((64, 64, 3), dtype=np.uint8)
+        for thread in list(self._capability_threads):
+            if not thread.is_alive():
+                continue
+            t0 = time.monotonic()
+            thread_name = type(thread).__name__
+            try:
+                tagged = TaggedFrame(frame=blank, origin_mode=FlecMode.EXPLORATION,
+                                     timestamp_ns=time.monotonic_ns())
+                thread._input_queue.put(tagged, timeout=1.0)
+                try:
+                    thread._output_queue.get(timeout=3.0)
+                except queue.Empty:
+                    pass
+            except Exception as exc:
+                logger.warning(json.dumps({"event": "warm_thread_error", "thread": thread_name,
+                                           "error": str(exc)}))
+            duration_ms = int((time.monotonic() - t0) * 1000)
+            logger.info(json.dumps({"event": "model_warmed", "model": thread_name,
+                                    "duration_ms": duration_ms}))
+
+        peak_ram_pct = 0.0
+        try:
+            usage = resource.getrusage(resource.RUSAGE_SELF)
+            ram_bytes = usage.ru_maxrss * 1024 if sys.platform == "darwin" else usage.ru_maxrss
+            total_ram = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+            peak_ram_pct = round(ram_bytes / total_ram * 100, 1) if total_ram > 0 else 0.0
+        except Exception:
+            pass
+
+        msg = {"event": "boot_complete", "peak_ram_pct": peak_ram_pct}
+        if peak_ram_pct > 80:
+            logger.warning(json.dumps({**msg, "warn": "peak_ram_exceeds_80pct"}))
+        else:
+            logger.info(json.dumps(msg))
+
     def process_frame(self, frame: np.ndarray, ocr_result: Optional[list[str]] = None) -> None:
         """Process a single camera frame through the perception pipeline.
 
         Runs object detection (shapes/colors) and finger tracking, routing each
         resulting DetectionEvent through the ResponseEngine. Called per-frame by
         the camera capture loop (or tests).
+
+        Also fans out a TaggedFrame to each registered CapabilityThread
+        (non-blocking; drops oldest on full queue — AC-10).
         """
-        from flec.models import DetectionEvent, DetectionType
+        from flec.models import DetectionEvent, DetectionType, TaggedFrame, Mode as FlecMode
+
+        # Fan out to registered capability threads (non-blocking, drop oldest on full).
+        if self._capability_threads:
+            tagged = TaggedFrame(
+                frame=frame,
+                origin_mode=self._response_engine.mode,
+                timestamp_ns=time.monotonic_ns(),
+            )
+            for thread in self._capability_threads:
+                try:
+                    thread._input_queue.put(tagged, block=False)
+                except queue.Full:
+                    try:
+                        thread._input_queue.get_nowait()
+                    except queue.Empty:
+                        pass
+                    try:
+                        thread._input_queue.put(tagged, block=False)
+                    except queue.Full:
+                        pass
 
         # 1. Object identification — shapes & colors (Exploration / Challenge).
         #    Gate through the stabilizer so only steady, real detections are
         #    narrated (drops single-frame phantom shapes/colors).
-        for event in self._stabilizer.filter(self._shape_detector.detect(frame)):
+        detected_events = self._stabilizer.filter(self._shape_detector.detect(frame))
+        for event in detected_events:
             self._response_engine.on_event(event)
 
-        # 2. Finger tracking (Reading mode).
+        # 1b. BLIP-2 scene description fallback for Exploration when YOLO is absent.
+        # When no model is loaded and no events were detected, describe the whole
+        # frame at a throttled rate so the child still hears something.
+        if (
+            self._response_engine.mode == FlecMode.EXPLORATION
+            and self._shape_detector._yolo is None
+            and not detected_events
+            and (time.monotonic() - self._explore_last_described_at)
+            >= self._explore_describe_interval
+        ):
+            description = self._illustration_describer.describe(frame)
+            if description:
+                from flec.models import AudioResponse, AudioPriority
+                self._tts_engine.speak(AudioResponse(
+                    text=description,
+                    priority=AudioPriority.NORMAL,
+                    pre_cached=False,
+                ))
+            self._explore_last_described_at = time.monotonic()
+
+        # 2. Finger tracking — READING and EXPLORATION only.
+        # CHALLENGE and STORY don't use finger position; skip MediaPipe there.
+        current_mode = self._response_engine.mode
+        if current_mode not in (FlecMode.READING, FlecMode.EXPLORATION):
+            return
+
         state = self._finger_tracker.update(frame)
 
+        if current_mode == FlecMode.EXPLORATION:
+            # In exploration, emit a FINGER event so the AR overlay can show
+            # the fingertip trail.  No OCR/illustration path here.
+            if state.detected or state.intent.name != "IDLE":
+                event = DetectionEvent(
+                    type=DetectionType.FINGER,
+                    label="finger",
+                    confidence=1.0,
+                    metadata={
+                        "intent": state.intent,
+                        "nearest_text": None,
+                        "is_illustration": False,
+                        "position_x": state.position_x,
+                        "position_y": state.position_y,
+                        "velocity": state.velocity,
+                    },
+                )
+                self._response_engine.on_event(event)
+            return
+
+        # READING mode: OCR + illustration path
         if ocr_result is not None:
             self._finger_tracker.update_ocr(text_regions=ocr_result)
             state = self._finger_tracker.current_state
@@ -247,6 +458,12 @@ class FlecSession:
                     description = self._illustration_describer.describe(crop)
                     if description:
                         self._response_engine.set_pending_illustration(description)
+                    # Emit a one-time warning when OCR failed to load (edge #9).
+                    if self._ocr_reader._load_error is not None:
+                        self._ocr_once_warner.warn_once(
+                            "reading_ocr_unavailable",
+                            reason=str(self._ocr_reader._load_error),
+                        )
 
         if state.detected or state.intent.name != "IDLE":
             event = DetectionEvent(
@@ -256,13 +473,22 @@ class FlecSession:
                 metadata={
                     "intent": state.intent,
                     "nearest_text": state.nearest_text,
-                    "is_illustration": bool(self._response_engine._pending_illustration),
+                    "is_illustration": self._response_engine.has_pending_illustration,
                     "position_x": state.position_x,
                     "position_y": state.position_y,
                     "velocity": state.velocity,
                 },
             )
             self._response_engine.on_event(event)
+
+    def set_mode(self, mode) -> None:
+        """Switch session mode and reset all capability thread tracking state (AC-14)."""
+        from flec.models import Mode as FlecMode
+        self._response_engine.set_mode(mode)
+        for thread in self._capability_threads:
+            thread.reset_tracking()
+        logger.info(json.dumps({"event": "session_mode_changed", "mode": mode.name
+                                if hasattr(mode, "name") else str(mode)}))
 
     def drain_voice_commands(self) -> None:
         """Route any mic-captured VoiceCommands as VOICE_CMD events.
@@ -297,10 +523,13 @@ class FlecSession:
         if self._mic is not None:
             self._mic.stop()  # type: ignore[attr-defined]
         self._tts_engine.shutdown()
+        if hasattr(self, "_ocr_reader"):
+            self._ocr_reader.shutdown()
 
     def reset_reading_state(self) -> None:
-        """Reset FingerTracker on mode transitions."""
+        """Reset FingerTracker and OCR orientation cache on mode transitions."""
         self._finger_tracker.reset()
+        self._ocr_cached_orient = None
         logger.info(json.dumps({"event": "reading_state_reset"}))
 
     @property
