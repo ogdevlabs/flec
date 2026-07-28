@@ -6,9 +6,12 @@ on:
   pull_request:
     branches: ["phase/1-setup", "main"]
 
-# Cancel in-flight runs on the same branch when a newer push arrives
+# Cancel any in-flight run on the same branch the moment a new commit arrives.
+# github.head_ref is set on pull_request events (the source branch name);
+# github.ref is used for push events. Together they ensure only one run
+# per branch is active at a time across both push and PR triggers.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 env:
