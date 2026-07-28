@@ -284,7 +284,9 @@ def test_process_frame_no_illustration_when_describer_unavailable(monkeypatch):
 
 def test_process_frame_illustration_not_called_when_ocr_succeeds(monkeypatch):
     """When OCR finds a confident word, IllustrationDescriber is not called."""
+    from flec.models import Mode
     session = FlecSession(mode="dev", tts_backend="off", voice=False)
+    session.set_mode(Mode.READING)
     try:
         monkeypatch.setattr(
             session._finger_tracker, "update",

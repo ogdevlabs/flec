@@ -56,10 +56,10 @@ def _drain(q: queue.Queue) -> list[str]:
 
 
 class TestFingerTrackerGating:
-    """FingerTracker.update() should only be called in READING mode."""
+    """FingerTracker.update() runs in READING and EXPLORATION; skipped elsewhere."""
 
-    def test_finger_tracker_not_called_in_exploration(self) -> None:
-        """process_frame must skip FingerTracker.update() when mode is EXPLORATION."""
+    def test_finger_tracker_called_in_exploration(self) -> None:
+        """process_frame must call FingerTracker.update() in EXPLORATION mode."""
         import os
         os.environ["FLEC_READING_WEAR_OVERRIDE"] = "1"
         from flec.main import FlecSession
@@ -78,7 +78,7 @@ class TestFingerTrackerGating:
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
         session.process_frame(frame)
 
-        mock_tracker.update.assert_not_called()
+        mock_tracker.update.assert_called_once()
 
     def test_finger_tracker_called_in_reading(self) -> None:
         """process_frame must call FingerTracker.update() in READING mode."""
@@ -103,13 +103,34 @@ class TestFingerTrackerGating:
         mock_tracker.update.assert_called_once()
 
     def test_finger_tracker_not_called_in_challenge(self) -> None:
-        """FingerTracker must also be skipped in CHALLENGE mode."""
+        """FingerTracker must be skipped in CHALLENGE mode."""
         import os
         os.environ["FLEC_READING_WEAR_OVERRIDE"] = "1"
         from flec.main import FlecSession
 
         session = FlecSession(mode="dev", tts_backend="log", voice=False, shapes=False)
         session._response_engine.set_mode(Mode.CHALLENGE)
+
+        mock_tracker = MagicMock()
+        mock_tracker.update.return_value = MagicMock(
+            detected=False, intent=MagicMock(name="IDLE"), nearest_text=None,
+            velocity=0.0, position_x=0.5, position_y=0.5,
+        )
+        session._finger_tracker = mock_tracker
+
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        session.process_frame(frame)
+
+        mock_tracker.update.assert_not_called()
+
+    def test_finger_tracker_not_called_in_story(self) -> None:
+        """FingerTracker must be skipped in STORY mode."""
+        import os
+        os.environ["FLEC_READING_WEAR_OVERRIDE"] = "1"
+        from flec.main import FlecSession
+
+        session = FlecSession(mode="dev", tts_backend="log", voice=False, shapes=False)
+        session._response_engine.set_mode(Mode.STORY)
 
         mock_tracker = MagicMock()
         mock_tracker.update.return_value = MagicMock(

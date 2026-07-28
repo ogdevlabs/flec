@@ -193,6 +193,12 @@ class FlecSession:
             os.environ.get("FLEC_OCR_CONF_GATE", "0.4")
         )
         self._ocr_cached_orient: Optional[str] = None
+        # Throttle exploration-mode BLIP-2 fallback: describe the scene at most
+        # once every N seconds when YOLO is absent.
+        self._explore_describe_interval: float = float(
+            os.environ.get("FLEC_EXPLORE_DESCRIBE_INTERVAL", "4.0")
+        )
+        self._explore_last_described_at: float = 0.0
 
         # Real audio output (Coqui VITS → say → log, per backend availability).
         self._tts_engine = TTSEngine(backend=tts_backend)
@@ -373,50 +379,91 @@ class FlecSession:
         # 1. Object identification — shapes & colors (Exploration / Challenge).
         #    Gate through the stabilizer so only steady, real detections are
         #    narrated (drops single-frame phantom shapes/colors).
-        for event in self._stabilizer.filter(self._shape_detector.detect(frame)):
+        detected_events = self._stabilizer.filter(self._shape_detector.detect(frame))
+        for event in detected_events:
             self._response_engine.on_event(event)
 
-        # 2. Finger tracking — only in READING mode.
-        # MediaPipe runs ~13ms/frame; skipping it in Exploration/Challenge
-        # saves ~50% of process_frame cost and avoids spurious FINGER events.
-        if self._response_engine.mode != FlecMode.READING:
+        # 1b. BLIP-2 scene description fallback for Exploration when YOLO is absent.
+        # When no model is loaded and no events were detected, describe the whole
+        # frame at a throttled rate so the child still hears something.
+        if (
+            self._response_engine.mode == FlecMode.EXPLORATION
+            and self._shape_detector._yolo is None
+            and not detected_events
+            and (time.monotonic() - self._explore_last_described_at)
+            >= self._explore_describe_interval
+        ):
+            description = self._illustration_describer.describe(frame)
+            if description:
+                from flec.models import AudioResponse, AudioPriority
+                self._tts_engine.speak(AudioResponse(
+                    text=description,
+                    priority=AudioPriority.NORMAL,
+                    pre_cached=False,
+                ))
+            self._explore_last_described_at = time.monotonic()
+
+        # 2. Finger tracking — READING and EXPLORATION only.
+        # CHALLENGE and STORY don't use finger position; skip MediaPipe there.
+        current_mode = self._response_engine.mode
+        if current_mode not in (FlecMode.READING, FlecMode.EXPLORATION):
             return
 
         state = self._finger_tracker.update(frame)
 
-        if self._response_engine.mode == FlecMode.READING:
-            if ocr_result is not None:
-                self._finger_tracker.update_ocr(text_regions=ocr_result)
-                state = self._finger_tracker.current_state
-            else:
-                from flec.reading.ocr_worker import should_run_ocr, crop_around_fingertip, resolve_orientation
+        if current_mode == FlecMode.EXPLORATION:
+            # In exploration, emit a FINGER event so the AR overlay can show
+            # the fingertip trail.  No OCR/illustration path here.
+            if state.detected or state.intent.name != "IDLE":
+                event = DetectionEvent(
+                    type=DetectionType.FINGER,
+                    label="finger",
+                    confidence=1.0,
+                    metadata={
+                        "intent": state.intent,
+                        "nearest_text": None,
+                        "is_illustration": False,
+                        "position_x": state.position_x,
+                        "position_y": state.position_y,
+                        "velocity": state.velocity,
+                    },
+                )
+                self._response_engine.on_event(event)
+            return
 
-                if should_run_ocr(state.detected, state.velocity, self._ocr_settle_threshold):
-                    crop = crop_around_fingertip(frame, state.position_x, state.position_y)
-                    text, conf, orient = resolve_orientation(
-                        crop,
-                        self._ocr_reader.read_region,
-                        cached=self._ocr_cached_orient,
-                        conf_gate=self._ocr_conf_gate,
-                    )
-                    if text and conf >= self._ocr_conf_gate:
-                        self._ocr_cached_orient = orient
-                        # Flush pending audio when the pointed word changes (AC-4).
-                        if state.nearest_text and state.nearest_text != text:
-                            self._tts_engine.clear_pending()
-                        self._finger_tracker.update_ocr(text_regions=[text])
-                        state = self._finger_tracker.current_state
-                    else:
-                        # No confident word — attempt illustration description (AC-3).
-                        description = self._illustration_describer.describe(crop)
-                        if description:
-                            self._response_engine.set_pending_illustration(description)
-                        # Emit a one-time warning when OCR failed to load (edge #9).
-                        if self._ocr_reader._load_error is not None:
-                            self._ocr_once_warner.warn_once(
-                                "reading_ocr_unavailable",
-                                reason=str(self._ocr_reader._load_error),
-                            )
+        # READING mode: OCR + illustration path
+        if ocr_result is not None:
+            self._finger_tracker.update_ocr(text_regions=ocr_result)
+            state = self._finger_tracker.current_state
+        else:
+            from flec.reading.ocr_worker import should_run_ocr, crop_around_fingertip, resolve_orientation
+
+            if should_run_ocr(state.detected, state.velocity, self._ocr_settle_threshold):
+                crop = crop_around_fingertip(frame, state.position_x, state.position_y)
+                text, conf, orient = resolve_orientation(
+                    crop,
+                    self._ocr_reader.read_region,
+                    cached=self._ocr_cached_orient,
+                    conf_gate=self._ocr_conf_gate,
+                )
+                if text and conf >= self._ocr_conf_gate:
+                    self._ocr_cached_orient = orient
+                    # Flush pending audio when the pointed word changes (AC-4).
+                    if state.nearest_text and state.nearest_text != text:
+                        self._tts_engine.clear_pending()
+                    self._finger_tracker.update_ocr(text_regions=[text])
+                    state = self._finger_tracker.current_state
+                else:
+                    # No confident word — attempt illustration description (AC-3).
+                    description = self._illustration_describer.describe(crop)
+                    if description:
+                        self._response_engine.set_pending_illustration(description)
+                    # Emit a one-time warning when OCR failed to load (edge #9).
+                    if self._ocr_reader._load_error is not None:
+                        self._ocr_once_warner.warn_once(
+                            "reading_ocr_unavailable",
+                            reason=str(self._ocr_reader._load_error),
+                        )
 
         if state.detected or state.intent.name != "IDLE":
             event = DetectionEvent(
